@@ -1,21 +1,13 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
+/*
+ * main.c — Application entry point and super loop
+ *
+ * Initializes all peripherals, then runs the 10 Hz frame-synchronous pipeline:
+ *   DMA frame ready → swap buffers → interpolate → centroid → [Kalman] →
+ *   FSM → [PID] → servo update → laser control → UART stream
+ *
+ * ISR callbacks for I2C DMA complete and EXTI (USER button) live here or
+ * in stm32f4xx_it.c. The loop spins on AMG8833_FrameReady() between frames.
+ */
 
 #include "main.h"
 #include "config.h"

@@ -1,3 +1,11 @@
+/*
+ * helper.c — Legacy utilities (UART print + blocking joystick ADC read)
+ *
+ * DEPRECATED: Contents are migrating to joystick.c (DMA-based reads) and
+ * uart_stream.c (binary frame protocol). This file will be removed once
+ * the new modules are functional.
+ */
+
 #include "helper.h"
 #include "config.h"
 
