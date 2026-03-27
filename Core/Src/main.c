@@ -11,7 +11,8 @@
 
 #include "main.h"
 #include "config.h"
-#include "helper.h"
+#include "joystick.h"
+#include "uart_stream.h"
 #include <stdio.h>
 
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
@@ -22,20 +23,20 @@ int main(void)
 
   SystemClock_Config();
 
-  MX_GPIO_Init(); // Initializes gpio for A2
+  MX_GPIO_Init();
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
-  MX_ADC1_Init(); // Initialize ADC for A0, A1
+  MX_DMA_Init();   // must come before ADC init
+  MX_ADC1_Init();  // Initialize ADC1 for joystick (PA3=VRx, PC0=VRy)
+  Joystick_Init(); // Start ADC1 DMA2 continuous scan
 
   char message[100];
   while (1)
   {
-	  JoystickReading joy = read_joystick_adc();
-
-	  // poll a2 - make this an interrupt for firing
-	  GPIO_PinState sw = HAL_GPIO_ReadPin(GPIOC, PIN_SW);
-
-	  sprintf(message, "VRx: %lu, VRy: %lu, SW: %i\r\n", joy.vr_x, joy.vr_y, sw);
+	  JoystickReading r = read_joystick_adc();
+	  sprintf(message, "Vr_x: %c, Vr_y: %c\r\n",
+	          r.vr_x > 0.0f ? '+' : (r.vr_x < 0.0f ? '-' : '0'),
+	          r.vr_y > 0.0f ? '+' : (r.vr_y < 0.0f ? '-' : '0'));
 	  print_uart(message);
 	  HAL_Delay(1000);
   }

@@ -15,6 +15,7 @@ UART_HandleTypeDef huart3;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma2_joystick;
 
 
 void SystemClock_Config(void)
@@ -145,6 +146,37 @@ void MX_GPIO_Init(void)
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+	/*Configure GPIO pin : PD12 (Laser control) — start HIGH (laser OFF) */
+	HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, GPIO_PIN_SET);
+	GPIO_InitStruct.Pin = GPIO_PIN_12;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+}
+
+void MX_DMA_Init(void)
+{
+	__HAL_RCC_DMA2_CLK_ENABLE();
+
+	hdma2_joystick.Instance = DMA2_Stream0;
+	hdma2_joystick.Init.Channel             = DMA_CHANNEL_0;
+	hdma2_joystick.Init.Direction           = DMA_PERIPH_TO_MEMORY;
+	hdma2_joystick.Init.PeriphInc           = DMA_PINC_DISABLE;
+	hdma2_joystick.Init.MemInc              = DMA_MINC_ENABLE;
+	hdma2_joystick.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+	hdma2_joystick.Init.MemDataAlignment    = DMA_MDATAALIGN_HALFWORD;
+	hdma2_joystick.Init.Mode                = DMA_CIRCULAR;
+	hdma2_joystick.Init.Priority            = DMA_PRIORITY_LOW;
+	hdma2_joystick.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
+
+	if (HAL_DMA_Init(&hdma2_joystick) != HAL_OK)
+	{
+		Error_Handler();
+	}
+
+	__HAL_LINKDMA(&hadc1, DMA_Handle, hdma2_joystick);
 }
 
 void MX_ADC1_Init(void)
@@ -157,14 +189,14 @@ void MX_ADC1_Init(void)
 	hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
 	hadc1.Init.Resolution = ADC_RESOLUTION_12B;
 	hadc1.Init.ScanConvMode = ENABLE;
-	hadc1.Init.ContinuousConvMode = DISABLE;
+	hadc1.Init.ContinuousConvMode = ENABLE;
 	hadc1.Init.DiscontinuousConvMode = DISABLE;
 	hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
 	hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
 	hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
 	hadc1.Init.NbrOfConversion = 2;
-	hadc1.Init.DMAContinuousRequests = DISABLE;
-	hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+	hadc1.Init.DMAContinuousRequests = ENABLE;
+	hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
 
 	if (HAL_ADC_Init(&hadc1) != HAL_OK)
 	{

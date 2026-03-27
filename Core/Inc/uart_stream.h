@@ -14,6 +14,6 @@
 #ifndef INC_UART_STREAM_H_
 #define INC_UART_STREAM_H_
 
-
+void print_uart(char * msg);
 
 #endif /* INC_UART_STREAM_H_ */

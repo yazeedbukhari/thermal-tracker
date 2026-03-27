@@ -9,3 +9,8 @@
  */
 
 #include "uart_stream.h"
+#include "config.h"
+
+void print_uart(char * msg) {
+	HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 100);
+}
