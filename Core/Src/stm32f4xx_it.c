@@ -200,4 +200,9 @@ void SysTick_Handler(void)
 
 /* USER CODE BEGIN 1 */
 
+void EXTI3_IRQHandler(void)
+{
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_3);
+}
+
 /* USER CODE END 1 */

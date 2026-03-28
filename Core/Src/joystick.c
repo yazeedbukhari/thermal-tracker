@@ -11,6 +11,9 @@
  * Owner: Yazeed
  */
 
+// VRx uses Pin PA3 (A0)
+// VRy uses Pin PC0 (A1)
+
 #include "joystick.h"
 #include "config.h"
 

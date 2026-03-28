@@ -15,8 +15,9 @@ UART_HandleTypeDef huart3;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 ADC_HandleTypeDef hadc1;
-DMA_HandleTypeDef hdma2_joystick;
 
+DMA_HandleTypeDef hdma2_joystick;
+TIM_HandleTypeDef htim3_servos;
 
 void SystemClock_Config(void)
 {
@@ -140,12 +141,14 @@ void MX_GPIO_Init(void)
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : PC_3 (Joystick Switch) */
+	/*Configure GPIO pin : PC_3 (Joystick Switch) — falling edge interrupt */
 	GPIO_InitStruct.Pin = GPIO_PIN_3;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+	HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(EXTI3_IRQn);
 
 	/*Configure GPIO pin : PD12 (Laser control) — start HIGH (laser OFF) */
 	HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, GPIO_PIN_SET);
@@ -220,6 +223,47 @@ void MX_ADC1_Init(void)
 	sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
 
 	if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+	{
+		Error_Handler();
+	}
+}
+
+void MX_TIM3_Init(void)
+{
+	/* GPIO: PA6 = TIM3_CH1 (pan), PA7 = TIM3_CH2 (tilt) — AF2 */
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	GPIO_InitStruct.Pin       = GPIO_PIN_6 | GPIO_PIN_7;
+	GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+	GPIO_InitStruct.Pull      = GPIO_NOPULL;
+	GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_LOW;
+	GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+	/* TIM3: 84 MHz APB1 timer clock, prescaler=83 → 1 MHz tick, ARR=19999 → 50 Hz */
+	__HAL_RCC_TIM3_CLK_ENABLE();
+	htim3_servos.Instance               = TIM3;
+	htim3_servos.Init.Prescaler         = 83;
+	htim3_servos.Init.CounterMode       = TIM_COUNTERMODE_UP;
+	htim3_servos.Init.Period            = 19999;
+	htim3_servos.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+	htim3_servos.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	if (HAL_TIM_PWM_Init(&htim3_servos) != HAL_OK)
+	{
+		Error_Handler();
+	}
+
+	TIM_OC_InitTypeDef sConfigOC = {0};
+	sConfigOC.OCMode       = TIM_OCMODE_PWM1;
+	sConfigOC.Pulse        = 1500;   /* 1.5 ms = 90° center */
+	sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
+	sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
+
+	if (HAL_TIM_PWM_ConfigChannel(&htim3_servos, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+	{
+		Error_Handler();
+	}
+	if (HAL_TIM_PWM_ConfigChannel(&htim3_servos, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
 	{
 		Error_Handler();
 	}

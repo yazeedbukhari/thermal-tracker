@@ -12,6 +12,7 @@
 #include "main.h"
 #include "config.h"
 #include "joystick.h"
+#include "servo.h"
 #include "uart_stream.h"
 #include <stdio.h>
 
@@ -28,16 +29,28 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   MX_DMA_Init();   // must come before ADC init
   MX_ADC1_Init();  // Initialize ADC1 for joystick (PA3=VRx, PC0=VRy)
+  MX_TIM3_Init();  // Initialize TIM3 PWM for servos (PA6=pan, PA7=tilt)
   Joystick_Init(); // Start ADC1 DMA2 continuous scan
+  Servo_Init();    // Start TIM3 PWM, center both servos at 90°
 
-  char message[100];
   while (1)
   {
 	  JoystickReading r = read_joystick_adc();
-	  sprintf(message, "Vr_x: %c, Vr_y: %c\r\n",
-	          r.vr_x > 0.0f ? '+' : (r.vr_x < 0.0f ? '-' : '0'),
-	          r.vr_y > 0.0f ? '+' : (r.vr_y < 0.0f ? '-' : '0'));
-	  print_uart(message);
-	  HAL_Delay(1000);
+    
+    Servo_SetPan(Servo_GetPan() + r.vr_x);
+    Servo_SetTilt(Servo_GetTilt() + r.vr_y);
+	  HAL_Delay(1);
   }
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == PIN_SW)
+    {
+        char msg[40];
+        int pan  = (int)Servo_GetPan();
+        int tilt = (int)Servo_GetTilt();
+        int len = sprintf(msg, "pan: %d, tilt: %d\r\n", pan, tilt);
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, len, 100);
+    }
 }
