@@ -5,7 +5,7 @@
  * angle delta. Supports integral anti-windup and an external velocity estimate
  * for the derivative term once the Kalman filter is active.
  *
- * Owner:
+ * Owner: Yazeed
  */
 
 #include "pid.h"

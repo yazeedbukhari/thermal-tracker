@@ -4,7 +4,7 @@
  * Initializes TIM3 at 50 Hz and maps floating-point angles (0-180 degrees)
  * to the corresponding pulse width on each timer channel.
  *
- * Owner:
+ * Owner: Yazeed & Ali
  */
 
 // pan uses Pin PA6 (TIM3_CH1)

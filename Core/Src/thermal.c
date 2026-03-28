@@ -5,7 +5,7 @@
  * frame, upscales it to 64x64 via bilinear interpolation, then extracts a
  * weighted sub-pixel centroid of all pixels above a temperature threshold.
  *
- * Owner:
+ * Owner: Ali
  */
 
 #include "thermal.h"
