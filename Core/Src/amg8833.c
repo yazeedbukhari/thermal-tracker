@@ -5,7 +5,7 @@
  * Two 128-byte buffers alternate: DMA fills one while the CPU processes the
  * other. The DMA-complete ISR swaps buffer pointers.
  *
- * Owner:
+ * Owner: Ali
  */
 
 #include "amg8833.h"v
