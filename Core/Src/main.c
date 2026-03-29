@@ -22,6 +22,12 @@
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
 #define AMG8833_BRINGUP_TEST 1U
 #define AMG_FRAME_PERIOD_MS 100U  /* AMG8833 configured at 10 FPS */
+#define STREAM_UPSCALED_BINARY 1U
+#define UPSCALE_W 64U
+#define UPSCALE_H 64U
+#define UPSCALED_STREAM_PERIOD_MS 100U  /* send each sensor frame (~10 FPS) */
+#define Q_TEMP_MIN_C 18.0f
+#define Q_TEMP_MAX_C 35.0f
 
 static void uart_send(const char *msg)
 {
@@ -149,6 +155,64 @@ static void uart_send_meta_csv(const ThermalDetection *det, float servo_angle_de
   HAL_UART_Transmit(&huart3, (uint8_t*)line, (uint16_t)idx, 200);
 }
 
+static int16_t to_fixed100(float v)
+{
+  return (int16_t)(v * 100.0f);
+}
+
+static uint8_t quantize_u8(float t)
+{
+  float n = (t - Q_TEMP_MIN_C) / (Q_TEMP_MAX_C - Q_TEMP_MIN_C);
+  if (n < 0.0f) n = 0.0f;
+  if (n > 1.0f) n = 1.0f;
+  return (uint8_t)(n * 255.0f);
+}
+
+static void uart_send_up64_packet(
+  uint16_t seq,
+  const float *up,
+  const ThermalDetection *det,
+  int16_t servo_deg_x10
+)
+{
+  uint8_t header[29];
+  uint16_t payload_len = (uint16_t)(UPSCALE_W * UPSCALE_H);
+  static uint8_t payload[UPSCALE_W * UPSCALE_H];
+
+  for (uint16_t i = 0; i < payload_len; i++) {
+    payload[i] = quantize_u8(up[i]);
+  }
+
+  int16_t cx = to_fixed100(det->centroid_x);
+  int16_t cy = to_fixed100(det->centroid_y);
+  int16_t avg = to_fixed100(det->avg_temp_c);
+  int16_t thr = to_fixed100(det->threshold_c);
+  int16_t mx = to_fixed100(det->max_temp_c);
+  uint16_t hot = det->hot_count;
+
+  header[0] = 'U'; header[1] = 'P'; header[2] = '6'; header[3] = '4';
+  header[4] = (uint8_t)(seq & 0xFF);
+  header[5] = (uint8_t)((seq >> 8) & 0xFF);
+  header[6] = (uint8_t)UPSCALE_W;
+  header[7] = (uint8_t)UPSCALE_H;
+  header[8] = (uint8_t)det->target_found;
+  header[9] = (uint8_t)det->min_x;
+  header[10] = (uint8_t)det->max_x;
+  header[11] = (uint8_t)det->min_y;
+  header[12] = (uint8_t)det->max_y;
+  header[13] = (uint8_t)(cx & 0xFF); header[14] = (uint8_t)((cx >> 8) & 0xFF);
+  header[15] = (uint8_t)(cy & 0xFF); header[16] = (uint8_t)((cy >> 8) & 0xFF);
+  header[17] = (uint8_t)(avg & 0xFF); header[18] = (uint8_t)((avg >> 8) & 0xFF);
+  header[19] = (uint8_t)(thr & 0xFF); header[20] = (uint8_t)((thr >> 8) & 0xFF);
+  header[21] = (uint8_t)(mx & 0xFF); header[22] = (uint8_t)((mx >> 8) & 0xFF);
+  header[23] = (uint8_t)(hot & 0xFF); header[24] = (uint8_t)((hot >> 8) & 0xFF);
+  header[25] = (uint8_t)(servo_deg_x10 & 0xFF); header[26] = (uint8_t)((servo_deg_x10 >> 8) & 0xFF);
+  header[27] = (uint8_t)(payload_len & 0xFF); header[28] = (uint8_t)((payload_len >> 8) & 0xFF);
+
+  HAL_UART_Transmit(&huart3, header, sizeof(header), 200);
+  HAL_UART_Transmit(&huart3, payload, payload_len, 400);
+}
+
 int main(void)
 {
   HAL_Init();
@@ -171,9 +235,12 @@ int main(void)
 #if AMG8833_BRINGUP_TEST
   uint8_t amg_addr = 0;
   float frame[AMG8833_PIXEL_COUNT];
+  static float upscaled[UPSCALE_W * UPSCALE_H];
   ThermalDetection det;
   const float servo_angle_placeholder = 90.0f;
   uint32_t next_frame_ms = HAL_GetTick();
+  uint32_t next_up_tx_ms = HAL_GetTick();
+  uint16_t up_seq = 0;
 
   uart_send("AMG8833 bring-up test\r\n");
   if (AMG8833_Probe(&hi2c1, &amg_addr) != HAL_OK) {
@@ -209,11 +276,20 @@ int main(void)
       continue;
     }
 
+    Thermal_AnalyzeFrame8x8(frame, &det);
+    Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
+
+#if STREAM_UPSCALED_BINARY
+    if ((int32_t)(now - next_up_tx_ms) >= 0) {
+      next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
+      uart_send_up64_packet(up_seq++, upscaled, &det, (int16_t)(servo_angle_placeholder * 10.0f));
+    }
+#else
     uart_send("BEGIN\r\n");
     uart_send_frame_csv(frame);
-    Thermal_AnalyzeFrame8x8(frame, &det);
     uart_send_meta_csv(&det, servo_angle_placeholder);
     uart_send("END\r\n");
+#endif
 #else
 		  JoystickReading r = read_joystick_adc();
 	    

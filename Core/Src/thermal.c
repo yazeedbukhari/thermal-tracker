@@ -107,3 +107,43 @@ void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out)
         out->centroid_y = weighted_sum_y / total_weight;
     }
 }
+
+void Thermal_UpscaleBilinear8x8(
+    const float in8x8[64],
+    float *out,
+    uint16_t out_w,
+    uint16_t out_h
+)
+{
+    if ((in8x8 == 0) || (out == 0) || (out_w == 0U) || (out_h == 0U)) {
+        return;
+    }
+
+    const float sx = (out_w > 1U) ? (7.0f / (float)(out_w - 1U)) : 0.0f;
+    const float sy = (out_h > 1U) ? (7.0f / (float)(out_h - 1U)) : 0.0f;
+
+    for (uint16_t oy = 0; oy < out_h; oy++) {
+        float gy = ((float)oy) * sy;
+        int y0 = (int)gy;
+        int y1 = (y0 < 7) ? (y0 + 1) : 7;
+        float dy = gy - (float)y0;
+
+        for (uint16_t ox = 0; ox < out_w; ox++) {
+            float gx = ((float)ox) * sx;
+            int x0 = (int)gx;
+            int x1 = (x0 < 7) ? (x0 + 1) : 7;
+            float dx = gx - (float)x0;
+
+            float v00 = in8x8[(y0 * 8) + x0];
+            float v10 = in8x8[(y0 * 8) + x1];
+            float v01 = in8x8[(y1 * 8) + x0];
+            float v11 = in8x8[(y1 * 8) + x1];
+
+            out[(oy * out_w) + ox] =
+                (v00 * (1.0f - dx) * (1.0f - dy)) +
+                (v10 * dx * (1.0f - dy)) +
+                (v01 * (1.0f - dx) * dy) +
+                (v11 * dx * dy);
+        }
+    }
+}
