@@ -168,6 +168,8 @@ void MX_GPIO_Init(void)
 
 	HAL_NVIC_SetPriority(EXTI3_IRQn, 5, 0);
 	HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+	HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 	/*Configure GPIO pin : PD12 (Laser control) — start HIGH (laser OFF) */
 	HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, GPIO_PIN_SET);

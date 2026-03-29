@@ -13,6 +13,7 @@
 #include "config.h"
 #include "amg8833.h"
 #include "thermal.h"
+#include "tracking.h"
 #include "joystick.h"
 #include "servo.h"
 #include "uart_stream.h"
@@ -22,12 +23,18 @@
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
 #define AMG8833_BRINGUP_TEST 1U
 #define AMG_FRAME_PERIOD_MS 100U  /* AMG8833 configured at 10 FPS */
-#define STREAM_UPSCALED_BINARY 1U
-#define UPSCALE_W 64U
-#define UPSCALE_H 64U
+#define STREAM_MULTI_OBJECT_BINARY 1U
+#define UPSCALE_W 32U
+#define UPSCALE_H 32U
 #define UPSCALED_STREAM_PERIOD_MS 100U  /* send each sensor frame (~10 FPS) */
 #define Q_TEMP_MIN_C 18.0f
 #define Q_TEMP_MAX_C 35.0f
+#define THERMAL_SERVO_TRACK_TEST 1U
+#define STREAM_OBJ_COUNT THERMAL_MAX_OBJECTS
+
+static volatile uint8_t g_next_object_request = 0U;
+static uint8_t g_selected_object = 0U;
+static volatile uint32_t g_last_b1_ms = 0U;
 
 static void uart_send(const char *msg)
 {
@@ -168,14 +175,52 @@ static uint8_t quantize_u8(float t)
   return (uint8_t)(n * 255.0f);
 }
 
-static void uart_send_up64_packet(
+static void detection_from_object(
+  ThermalDetection *det,
+  const ThermalObjectsResult *objs,
+  uint8_t selected_idx
+)
+{
+  det->target_found = 0U;
+  det->min_x = -1;
+  det->max_x = -1;
+  det->min_y = -1;
+  det->max_y = -1;
+  det->centroid_x = -1.0f;
+  det->centroid_y = -1.0f;
+  det->avg_temp_c = objs->avg_temp_c;
+  det->threshold_c = objs->threshold_c;
+  det->max_temp_c = objs->max_temp_c;
+  det->hot_count = objs->total_hot_count;
+
+  if (objs->count == 0U) {
+    return;
+  }
+
+  if (selected_idx >= objs->count) {
+    selected_idx = 0U;
+  }
+
+  const ThermalObject *obj = &objs->objects[selected_idx];
+  det->target_found = obj->valid;
+  det->min_x = obj->min_x;
+  det->max_x = obj->max_x;
+  det->min_y = obj->min_y;
+  det->max_y = obj->max_y;
+  det->centroid_x = obj->centroid_x;
+  det->centroid_y = obj->centroid_y;
+}
+
+static void uart_send_um64_packet(
   uint16_t seq,
   const float *up,
-  const ThermalDetection *det,
+  const ThermalObjectsResult *objs,
+  uint8_t selected_idx,
   int16_t servo_deg_x10
 )
 {
-  uint8_t header[29];
+  uint8_t header[20];
+  uint8_t objtab[STREAM_OBJ_COUNT * 12U];
   uint16_t payload_len = (uint16_t)(UPSCALE_W * UPSCALE_H);
   static uint8_t payload[UPSCALE_W * UPSCALE_H];
 
@@ -183,33 +228,44 @@ static void uart_send_up64_packet(
     payload[i] = quantize_u8(up[i]);
   }
 
-  int16_t cx = to_fixed100(det->centroid_x);
-  int16_t cy = to_fixed100(det->centroid_y);
-  int16_t avg = to_fixed100(det->avg_temp_c);
-  int16_t thr = to_fixed100(det->threshold_c);
-  int16_t mx = to_fixed100(det->max_temp_c);
-  uint16_t hot = det->hot_count;
+  int16_t avg = to_fixed100(objs->avg_temp_c);
+  int16_t thr = to_fixed100(objs->threshold_c);
+  int16_t mx = to_fixed100(objs->max_temp_c);
 
-  header[0] = 'U'; header[1] = 'P'; header[2] = '6'; header[3] = '4';
+  header[0] = 'U'; header[1] = 'M'; header[2] = '6'; header[3] = '4';
   header[4] = (uint8_t)(seq & 0xFF);
   header[5] = (uint8_t)((seq >> 8) & 0xFF);
   header[6] = (uint8_t)UPSCALE_W;
   header[7] = (uint8_t)UPSCALE_H;
-  header[8] = (uint8_t)det->target_found;
-  header[9] = (uint8_t)det->min_x;
-  header[10] = (uint8_t)det->max_x;
-  header[11] = (uint8_t)det->min_y;
-  header[12] = (uint8_t)det->max_y;
-  header[13] = (uint8_t)(cx & 0xFF); header[14] = (uint8_t)((cx >> 8) & 0xFF);
-  header[15] = (uint8_t)(cy & 0xFF); header[16] = (uint8_t)((cy >> 8) & 0xFF);
-  header[17] = (uint8_t)(avg & 0xFF); header[18] = (uint8_t)((avg >> 8) & 0xFF);
-  header[19] = (uint8_t)(thr & 0xFF); header[20] = (uint8_t)((thr >> 8) & 0xFF);
-  header[21] = (uint8_t)(mx & 0xFF); header[22] = (uint8_t)((mx >> 8) & 0xFF);
-  header[23] = (uint8_t)(hot & 0xFF); header[24] = (uint8_t)((hot >> 8) & 0xFF);
-  header[25] = (uint8_t)(servo_deg_x10 & 0xFF); header[26] = (uint8_t)((servo_deg_x10 >> 8) & 0xFF);
-  header[27] = (uint8_t)(payload_len & 0xFF); header[28] = (uint8_t)((payload_len >> 8) & 0xFF);
+  header[8] = objs->count;
+  header[9] = (objs->count > 0U) ? selected_idx : 0xFFU;
+  header[10] = (uint8_t)(avg & 0xFF); header[11] = (uint8_t)((avg >> 8) & 0xFF);
+  header[12] = (uint8_t)(thr & 0xFF); header[13] = (uint8_t)((thr >> 8) & 0xFF);
+  header[14] = (uint8_t)(mx & 0xFF); header[15] = (uint8_t)((mx >> 8) & 0xFF);
+  header[16] = (uint8_t)(servo_deg_x10 & 0xFF); header[17] = (uint8_t)((servo_deg_x10 >> 8) & 0xFF);
+  header[18] = (uint8_t)(payload_len & 0xFF); header[19] = (uint8_t)((payload_len >> 8) & 0xFF);
+
+  for (uint8_t i = 0U; i < STREAM_OBJ_COUNT; i++) {
+    const ThermalObject *obj = &objs->objects[i];
+    uint8_t *p = &objtab[i * 12U];
+    p[0] = obj->valid;
+    p[1] = (uint8_t)obj->min_x;
+    p[2] = (uint8_t)obj->max_x;
+    p[3] = (uint8_t)obj->min_y;
+    p[4] = (uint8_t)obj->max_y;
+    {
+      int16_t cx = to_fixed100(obj->centroid_x);
+      int16_t cy = to_fixed100(obj->centroid_y);
+      int16_t pk = to_fixed100(obj->peak_temp_c);
+      p[5] = (uint8_t)(cx & 0xFF); p[6] = (uint8_t)((cx >> 8) & 0xFF);
+      p[7] = (uint8_t)(cy & 0xFF); p[8] = (uint8_t)((cy >> 8) & 0xFF);
+      p[9] = (uint8_t)(pk & 0xFF); p[10] = (uint8_t)((pk >> 8) & 0xFF);
+    }
+    p[11] = (obj->hot_count > 255U) ? 255U : (uint8_t)obj->hot_count;
+  }
 
   HAL_UART_Transmit(&huart3, header, sizeof(header), 200);
+  HAL_UART_Transmit(&huart3, objtab, sizeof(objtab), 200);
   HAL_UART_Transmit(&huart3, payload, payload_len, 400);
 }
 
@@ -223,6 +279,11 @@ int main(void)
   MX_USART3_UART_Init();
 #if AMG8833_BRINGUP_TEST
   MX_I2C1_Init();
+#if THERMAL_SERVO_TRACK_TEST
+  MX_TIM3_Init();
+  Servo_Init();
+  Tracking_Init();
+#endif
 #else
   MX_USB_OTG_FS_PCD_Init();
   MX_DMA_Init();   // must come before ADC init
@@ -236,8 +297,8 @@ int main(void)
   uint8_t amg_addr = 0;
   float frame[AMG8833_PIXEL_COUNT];
   static float upscaled[UPSCALE_W * UPSCALE_H];
+  ThermalObjectsResult objs;
   ThermalDetection det;
-  const float servo_angle_placeholder = 90.0f;
   uint32_t next_frame_ms = HAL_GetTick();
   uint32_t next_up_tx_ms = HAL_GetTick();
   uint16_t up_seq = 0;
@@ -276,18 +337,31 @@ int main(void)
       continue;
     }
 
-    Thermal_AnalyzeFrame8x8(frame, &det);
+    Thermal_DetectObjects8x8(frame, &objs);
+    if ((objs.count > 0U) && (g_selected_object >= objs.count)) {
+      g_selected_object = 0U;
+    }
+    if ((g_next_object_request != 0U) && (objs.count > 0U)) {
+      g_selected_object = (uint8_t)((g_selected_object + 1U) % objs.count);
+      g_next_object_request = 0U;
+    } else if (objs.count == 0U) {
+      g_next_object_request = 0U;
+    }
+    detection_from_object(&det, &objs, g_selected_object);
     Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
+#if THERMAL_SERVO_TRACK_TEST
+    Tracking_UpdateFromDetection(&det);
+#endif
 
-#if STREAM_UPSCALED_BINARY
+#if STREAM_MULTI_OBJECT_BINARY
     if ((int32_t)(now - next_up_tx_ms) >= 0) {
       next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
-      uart_send_up64_packet(up_seq++, upscaled, &det, (int16_t)(servo_angle_placeholder * 10.0f));
+      uart_send_um64_packet(up_seq++, upscaled, &objs, g_selected_object, (int16_t)(Servo_GetPan() * 10.0f));
     }
 #else
     uart_send("BEGIN\r\n");
     uart_send_frame_csv(frame);
-    uart_send_meta_csv(&det, servo_angle_placeholder);
+    uart_send_meta_csv(&det, Servo_GetPan());
     uart_send("END\r\n");
 #endif
 #else
@@ -302,6 +376,18 @@ int main(void)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
+    if (GPIO_Pin == USER_Btn_Pin)
+    {
+#if AMG8833_BRINGUP_TEST
+        uint32_t now = HAL_GetTick();
+        if ((now - g_last_b1_ms) > 180U) {
+          g_last_b1_ms = now;
+          g_next_object_request = 1U;
+        }
+#endif
+        return;
+    }
+
     if (GPIO_Pin == PIN_SW)
     {
 #if AMG8833_BRINGUP_TEST

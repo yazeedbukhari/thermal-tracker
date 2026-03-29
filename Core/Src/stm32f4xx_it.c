@@ -205,4 +205,9 @@ void EXTI3_IRQHandler(void)
     HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_3);
 }
 
+void EXTI15_10_IRQHandler(void)
+{
+    HAL_GPIO_EXTI_IRQHandler(USER_Btn_Pin);
+}
+
 /* USER CODE END 1 */

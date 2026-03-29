@@ -14,15 +14,59 @@
 #define ABSOLUTE_MIN_TARGET_TEMP_C  24.5f
 #define MIN_HOT_PIXELS              5
 
-void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out)
+static void clear_objects(ThermalObjectsResult *out)
+{
+    out->avg_temp_c = 0.0f;
+    out->threshold_c = 0.0f;
+    out->max_temp_c = -1000.0f;
+    out->total_hot_count = 0U;
+    out->count = 0U;
+    for (uint32_t i = 0; i < THERMAL_MAX_OBJECTS; i++) {
+        out->objects[i].valid = 0U;
+        out->objects[i].min_x = -1;
+        out->objects[i].max_x = -1;
+        out->objects[i].min_y = -1;
+        out->objects[i].max_y = -1;
+        out->objects[i].centroid_x = -1.0f;
+        out->objects[i].centroid_y = -1.0f;
+        out->objects[i].peak_temp_c = -1000.0f;
+        out->objects[i].hot_count = 0U;
+    }
+}
+
+static void sort_objects_by_priority(ThermalObjectsResult *out)
+{
+    for (uint32_t i = 0; i + 1U < out->count; i++) {
+        for (uint32_t j = i + 1U; j < out->count; j++) {
+            const ThermalObject *a = &out->objects[i];
+            const ThermalObject *b = &out->objects[j];
+            uint8_t swap = 0U;
+
+            if (b->peak_temp_c > a->peak_temp_c) {
+                swap = 1U;
+            } else if ((b->peak_temp_c == a->peak_temp_c) && (b->hot_count > a->hot_count)) {
+                swap = 1U;
+            }
+
+            if (swap != 0U) {
+                ThermalObject tmp = out->objects[i];
+                out->objects[i] = out->objects[j];
+                out->objects[j] = tmp;
+            }
+        }
+    }
+}
+
+void Thermal_DetectObjects8x8(const float frame_c[64], ThermalObjectsResult *out)
 {
     if ((frame_c == 0) || (out == 0)) {
         return;
     }
 
+    clear_objects(out);
+
     float sum = 0.0f;
     float max_temp = -1000.0f;
-
     for (int i = 0; i < 64; i++) {
         float t = frame_c[i];
         sum += t;
@@ -42,69 +86,148 @@ void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out)
         effective_min_pixels = 3;
     }
 
-    int min_x = 7;
-    int max_x = 0;
-    int min_y = 7;
-    int max_y = 0;
-    int hot_count = 0;
+    out->avg_temp_c = avg_temp;
+    out->threshold_c = threshold;
+    out->max_temp_c = max_temp;
 
-    float weighted_sum_x = 0.0f;
-    float weighted_sum_y = 0.0f;
-    float total_weight = 0.0f;
+    uint8_t hot_mask[64];
+    uint8_t visited[64];
+    for (int i = 0; i < 64; i++) {
+        float t = frame_c[i];
+        hot_mask[i] = (uint8_t)(((t >= threshold) || (t >= ABSOLUTE_MIN_TARGET_TEMP_C)) ? 1U : 0U);
+        visited[i] = 0U;
+        if (hot_mask[i] != 0U) {
+            out->total_hot_count++;
+        }
+    }
 
-    for (int y = 0; y < 8; y++) {
-        for (int x = 0; x < 8; x++) {
-            float t = frame_c[(y * 8) + x];
-            int is_hot = (t >= threshold) || (t >= ABSOLUTE_MIN_TARGET_TEMP_C);
+    if ((max_temp < ABSOLUTE_MIN_TARGET_TEMP_C) || ((int)out->total_hot_count < effective_min_pixels)) {
+        return;
+    }
 
-            if (is_hot) {
-                hot_count++;
+    int queue[64];
+    for (int sy = 0; sy < 8; sy++) {
+        for (int sx = 0; sx < 8; sx++) {
+            int start_idx = (sy * 8) + sx;
+            if ((hot_mask[start_idx] == 0U) || (visited[start_idx] != 0U)) {
+                continue;
+            }
 
-                if (x < min_x) min_x = x;
-                if (x > max_x) max_x = x;
-                if (y < min_y) min_y = y;
-                if (y > max_y) max_y = y;
+            int head = 0;
+            int tail = 0;
+            queue[tail++] = start_idx;
+            visited[start_idx] = 1U;
 
+            int min_x = sx;
+            int max_x = sx;
+            int min_y = sy;
+            int max_y = sy;
+            int hot_count = 0;
+            float weighted_sum_x = 0.0f;
+            float weighted_sum_y = 0.0f;
+            float total_weight = 0.0f;
+            float peak_temp = frame_c[start_idx];
+
+            while (head < tail) {
+                int idx = queue[head++];
+                int y = idx / 8;
+                int x = idx % 8;
+                float t = frame_c[idx];
                 float base = threshold;
                 if (ABSOLUTE_MIN_TARGET_TEMP_C < base) {
                     base = ABSOLUTE_MIN_TARGET_TEMP_C;
                 }
-
-                float weight = t - base;
-                if (weight < 0.0f) {
-                    weight = 0.0f;
+                float w = t - base;
+                if (w < 0.0f) {
+                    w = 0.0f;
+                }
+                if (w == 0.0f) {
+                    w = 0.001f;
                 }
 
-                weighted_sum_x += ((float)x) * weight;
-                weighted_sum_y += ((float)y) * weight;
-                total_weight += weight;
+                hot_count++;
+                if (x < min_x) min_x = x;
+                if (x > max_x) max_x = x;
+                if (y < min_y) min_y = y;
+                if (y > max_y) max_y = y;
+                if (t > peak_temp) peak_temp = t;
+
+                weighted_sum_x += ((float)x) * w;
+                weighted_sum_y += ((float)y) * w;
+                total_weight += w;
+
+                for (int ny = y - 1; ny <= y + 1; ny++) {
+                    for (int nx = x - 1; nx <= x + 1; nx++) {
+                        if ((nx < 0) || (nx > 7) || (ny < 0) || (ny > 7)) {
+                            continue;
+                        }
+                        if ((nx == x) && (ny == y)) {
+                            continue;
+                        }
+
+                        int nidx = (ny * 8) + nx;
+                        if ((hot_mask[nidx] != 0U) && (visited[nidx] == 0U)) {
+                            visited[nidx] = 1U;
+                            queue[tail++] = nidx;
+                        }
+                    }
+                }
+            }
+
+            if ((hot_count < effective_min_pixels) || (total_weight <= 0.0f)) {
+                continue;
+            }
+
+            if (out->count < THERMAL_MAX_OBJECTS) {
+                ThermalObject *obj = &out->objects[out->count];
+                obj->valid = 1U;
+                obj->min_x = (int8_t)min_x;
+                obj->max_x = (int8_t)max_x;
+                obj->min_y = (int8_t)min_y;
+                obj->max_y = (int8_t)max_y;
+                obj->centroid_x = weighted_sum_x / total_weight;
+                obj->centroid_y = weighted_sum_y / total_weight;
+                obj->peak_temp_c = peak_temp;
+                obj->hot_count = (uint16_t)hot_count;
+                out->count++;
             }
         }
     }
 
-    out->target_found = 1U;
+    if (out->count > 1U) {
+        sort_objects_by_priority(out);
+    }
+}
+
+void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out)
+{
+    if ((frame_c == 0) || (out == 0)) {
+        return;
+    }
+    ThermalObjectsResult objs;
+    Thermal_DetectObjects8x8(frame_c, &objs);
+
+    out->avg_temp_c = objs.avg_temp_c;
+    out->threshold_c = objs.threshold_c;
+    out->max_temp_c = objs.max_temp_c;
+    out->hot_count = objs.total_hot_count;
+    out->target_found = 0U;
+    out->min_x = -1;
+    out->max_x = -1;
+    out->min_y = -1;
+    out->max_y = -1;
     out->centroid_x = -1.0f;
     out->centroid_y = -1.0f;
-    out->avg_temp_c = avg_temp;
-    out->threshold_c = threshold;
-    out->max_temp_c = max_temp;
-    out->hot_count = (uint16_t)hot_count;
 
-    if ((max_temp < ABSOLUTE_MIN_TARGET_TEMP_C) ||
-        (hot_count < effective_min_pixels) ||
-        (total_weight <= 0.0f)) {
-        out->target_found = 0U;
-        out->min_x = -1;
-        out->max_x = -1;
-        out->min_y = -1;
-        out->max_y = -1;
-    } else {
-        out->min_x = (int8_t)min_x;
-        out->max_x = (int8_t)max_x;
-        out->min_y = (int8_t)min_y;
-        out->max_y = (int8_t)max_y;
-        out->centroid_x = weighted_sum_x / total_weight;
-        out->centroid_y = weighted_sum_y / total_weight;
+    if (objs.count > 0U) {
+        const ThermalObject *obj = &objs.objects[0];
+        out->target_found = 1U;
+        out->min_x = obj->min_x;
+        out->max_x = obj->max_x;
+        out->min_y = obj->min_y;
+        out->max_y = obj->max_y;
+        out->centroid_x = obj->centroid_x;
+        out->centroid_y = obj->centroid_y;
     }
 }
 

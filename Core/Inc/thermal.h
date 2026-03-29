@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 
+#define THERMAL_MAX_OBJECTS 4U
+
 typedef struct {
     uint8_t target_found;
     int8_t min_x;
@@ -28,6 +30,29 @@ typedef struct {
     float max_temp_c;
     uint16_t hot_count;
 } ThermalDetection;
+
+typedef struct {
+    uint8_t valid;
+    int8_t min_x;
+    int8_t max_x;
+    int8_t min_y;
+    int8_t max_y;
+    float centroid_x;
+    float centroid_y;
+    float peak_temp_c;
+    uint16_t hot_count;
+} ThermalObject;
+
+typedef struct {
+    float avg_temp_c;
+    float threshold_c;
+    float max_temp_c;
+    uint16_t total_hot_count;
+    uint8_t count;
+    ThermalObject objects[THERMAL_MAX_OBJECTS];
+} ThermalObjectsResult;
+
+void Thermal_DetectObjects8x8(const float frame_c[64], ThermalObjectsResult *out);
 
 void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out);
 
