@@ -9,10 +9,11 @@
 
 #include "thermal.h"
 
-#define TEMP_OFFSET_C               3.0f
-#define ABSOLUTE_TARGET_CLAMP_C     28.0f
-#define ABSOLUTE_MIN_TARGET_TEMP_C  24.5f
+#define TEMP_OFFSET_C               5.0f
+#define ABSOLUTE_TARGET_CLAMP_C     32.0f
+#define ABSOLUTE_MIN_TARGET_TEMP_C  26.5f
 #define MIN_HOT_PIXELS              5
+#define CONNECT_OFFSET_C            0.9f
 
 static void clear_objects(ThermalObjectsResult *out)
 {
@@ -91,10 +92,14 @@ void Thermal_DetectObjects8x8(const float frame_c[64], ThermalObjectsResult *out
     out->max_temp_c = max_temp;
 
     uint8_t hot_mask[64];
+    uint8_t connect_mask[64];
     uint8_t visited[64];
+    float connect_threshold = threshold + CONNECT_OFFSET_C;
+    float connect_absolute = ABSOLUTE_MIN_TARGET_TEMP_C + CONNECT_OFFSET_C;
     for (int i = 0; i < 64; i++) {
         float t = frame_c[i];
         hot_mask[i] = (uint8_t)(((t >= threshold) || (t >= ABSOLUTE_MIN_TARGET_TEMP_C)) ? 1U : 0U);
+        connect_mask[i] = (uint8_t)(((t >= connect_threshold) || (t >= connect_absolute)) ? 1U : 0U);
         visited[i] = 0U;
         if (hot_mask[i] != 0U) {
             out->total_hot_count++;
@@ -109,7 +114,7 @@ void Thermal_DetectObjects8x8(const float frame_c[64], ThermalObjectsResult *out
     for (int sy = 0; sy < 8; sy++) {
         for (int sx = 0; sx < 8; sx++) {
             int start_idx = (sy * 8) + sx;
-            if ((hot_mask[start_idx] == 0U) || (visited[start_idx] != 0U)) {
+            if ((connect_mask[start_idx] == 0U) || (visited[start_idx] != 0U)) {
                 continue;
             }
 
@@ -156,20 +161,33 @@ void Thermal_DetectObjects8x8(const float frame_c[64], ThermalObjectsResult *out
                 weighted_sum_y += ((float)y) * w;
                 total_weight += w;
 
-                for (int ny = y - 1; ny <= y + 1; ny++) {
-                    for (int nx = x - 1; nx <= x + 1; nx++) {
-                        if ((nx < 0) || (nx > 7) || (ny < 0) || (ny > 7)) {
-                            continue;
-                        }
-                        if ((nx == x) && (ny == y)) {
-                            continue;
-                        }
-
-                        int nidx = (ny * 8) + nx;
-                        if ((hot_mask[nidx] != 0U) && (visited[nidx] == 0U)) {
-                            visited[nidx] = 1U;
-                            queue[tail++] = nidx;
-                        }
+                /* 4-neighbor connectivity avoids diagonal bridging between objects. */
+                if (y > 0) {
+                    int nidx = ((y - 1) * 8) + x;
+                    if ((connect_mask[nidx] != 0U) && (visited[nidx] == 0U)) {
+                        visited[nidx] = 1U;
+                        queue[tail++] = nidx;
+                    }
+                }
+                if (y < 7) {
+                    int nidx = ((y + 1) * 8) + x;
+                    if ((connect_mask[nidx] != 0U) && (visited[nidx] == 0U)) {
+                        visited[nidx] = 1U;
+                        queue[tail++] = nidx;
+                    }
+                }
+                if (x > 0) {
+                    int nidx = (y * 8) + (x - 1);
+                    if ((connect_mask[nidx] != 0U) && (visited[nidx] == 0U)) {
+                        visited[nidx] = 1U;
+                        queue[tail++] = nidx;
+                    }
+                }
+                if (x < 7) {
+                    int nidx = (y * 8) + (x + 1);
+                    if ((connect_mask[nidx] != 0U) && (visited[nidx] == 0U)) {
+                        visited[nidx] = 1U;
+                        queue[tail++] = nidx;
                     }
                 }
             }
