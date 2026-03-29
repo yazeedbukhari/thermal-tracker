@@ -12,6 +12,7 @@
 #include "main.h"
 #include "config.h"
 #include "amg8833.h"
+#include "thermal.h"
 #include "joystick.h"
 #include "servo.h"
 #include "uart_stream.h"
@@ -20,10 +21,46 @@
 
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
 #define AMG8833_BRINGUP_TEST 1U
+#define AMG_FRAME_PERIOD_MS 100U  /* AMG8833 configured at 10 FPS */
 
 static void uart_send(const char *msg)
 {
   HAL_UART_Transmit(&huart3, (uint8_t*)msg, (uint16_t)strlen(msg), 100);
+}
+
+static int append_fixed(char *dst, size_t cap, size_t *idx, float value, int decimals)
+{
+  int32_t scale = (decimals == 1) ? 10 : 100;
+  int32_t scaled = (int32_t)(value * (float)scale);
+  int32_t abs_scaled = (scaled < 0) ? -scaled : scaled;
+  int written;
+
+  if (decimals == 1) {
+    written = snprintf(
+      dst + *idx,
+      cap - *idx,
+      "%s%ld.%01ld",
+      (scaled < 0) ? "-" : "",
+      (long)(abs_scaled / 10),
+      (long)(abs_scaled % 10)
+    );
+  } else {
+    written = snprintf(
+      dst + *idx,
+      cap - *idx,
+      "%s%ld.%02ld",
+      (scaled < 0) ? "-" : "",
+      (long)(abs_scaled / 100),
+      (long)(abs_scaled % 100)
+    );
+  }
+
+  if ((written <= 0) || ((size_t)written >= (cap - *idx))) {
+    return 0;
+  }
+
+  *idx += (size_t)written;
+  return 1;
 }
 
 static void uart_send_frame_csv(const float frame[AMG8833_PIXEL_COUNT])
@@ -33,24 +70,81 @@ static void uart_send_frame_csv(const float frame[AMG8833_PIXEL_COUNT])
 
   idx += (size_t)snprintf(line + idx, sizeof(line) - idx, "FRAME,");
   for (uint32_t i = 0; i < AMG8833_PIXEL_COUNT; i++) {
-    int32_t c100 = (int32_t)(frame[i] * 100.0f);
-    int32_t abs_c100 = (c100 < 0) ? -c100 : c100;
-    int written = snprintf(
-      line + idx,
-      sizeof(line) - idx,
-      "%s%ld.%02ld%s",
-      (c100 < 0) ? "-" : "",
-      (long)(abs_c100 / 100),
-      (long)(abs_c100 % 100),
-      (i < (AMG8833_PIXEL_COUNT - 1U)) ? "," : "\r\n"
-    );
-
-    if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) {
+    if (!append_fixed(line, sizeof(line), &idx, frame[i], 2)) {
       uart_send("ERR_FMT\r\n");
       return;
     }
-    idx += (size_t)written;
+
+    if (i < (AMG8833_PIXEL_COUNT - 1U)) {
+      int written = snprintf(line + idx, sizeof(line) - idx, ",");
+      if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) {
+        uart_send("ERR_FMT\r\n");
+        return;
+      }
+      idx += (size_t)written;
+    } else {
+      int written = snprintf(line + idx, sizeof(line) - idx, "\r\n");
+      if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) {
+        uart_send("ERR_FMT\r\n");
+        return;
+      }
+      idx += (size_t)written;
+    }
   }
+
+  HAL_UART_Transmit(&huart3, (uint8_t*)line, (uint16_t)idx, 200);
+}
+
+static void uart_send_meta_csv(const ThermalDetection *det, float servo_angle_deg)
+{
+  char line[240];
+  size_t idx = 0;
+
+  int written = snprintf(
+    line + idx,
+    sizeof(line) - idx,
+    "META,%u,%d,%d,%d,%d,",
+    (unsigned)det->target_found,
+    (int)det->min_x,
+    (int)det->max_x,
+    (int)det->min_y,
+    (int)det->max_y
+  );
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) {
+    uart_send("ERR_FMT\r\n");
+    return;
+  }
+  idx += (size_t)written;
+
+  if (!append_fixed(line, sizeof(line), &idx, det->centroid_x, 2)) return;
+  written = snprintf(line + idx, sizeof(line) - idx, ",");
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) return;
+  idx += (size_t)written;
+
+  if (!append_fixed(line, sizeof(line), &idx, det->centroid_y, 2)) return;
+  written = snprintf(line + idx, sizeof(line) - idx, ",");
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) return;
+  idx += (size_t)written;
+
+  if (!append_fixed(line, sizeof(line), &idx, det->avg_temp_c, 2)) return;
+  written = snprintf(line + idx, sizeof(line) - idx, ",");
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) return;
+  idx += (size_t)written;
+
+  if (!append_fixed(line, sizeof(line), &idx, det->threshold_c, 2)) return;
+  written = snprintf(line + idx, sizeof(line) - idx, ",");
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) return;
+  idx += (size_t)written;
+
+  if (!append_fixed(line, sizeof(line), &idx, det->max_temp_c, 2)) return;
+  written = snprintf(line + idx, sizeof(line) - idx, ",%u,", (unsigned)det->hot_count);
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) return;
+  idx += (size_t)written;
+
+  if (!append_fixed(line, sizeof(line), &idx, servo_angle_deg, 1)) return;
+  written = snprintf(line + idx, sizeof(line) - idx, "\r\n");
+  if ((written <= 0) || ((size_t)written >= (sizeof(line) - idx))) return;
+  idx += (size_t)written;
 
   HAL_UART_Transmit(&huart3, (uint8_t*)line, (uint16_t)idx, 200);
 }
@@ -77,20 +171,22 @@ int main(void)
 #if AMG8833_BRINGUP_TEST
   uint8_t amg_addr = 0;
   float frame[AMG8833_PIXEL_COUNT];
-  HAL_Delay(200);
+  ThermalDetection det;
+  const float servo_angle_placeholder = 90.0f;
+  uint32_t next_frame_ms = HAL_GetTick();
 
   uart_send("AMG8833 bring-up test\r\n");
   if (AMG8833_Probe(&hi2c1, &amg_addr) != HAL_OK) {
     uart_send("ERR_PROBE (check wiring/address)\r\n");
     while (1) {
-      HAL_Delay(500);
+      HAL_Delay(100);
     }
   }
 
   if (AMG8833_Init(&hi2c1, amg_addr) != HAL_OK) {
     uart_send("ERR_INIT\r\n");
     while (1) {
-      HAL_Delay(500);
+      HAL_Delay(100);
     }
   }
 
@@ -102,16 +198,22 @@ int main(void)
   while (1)
   {
 #if AMG8833_BRINGUP_TEST
+    uint32_t now = HAL_GetTick();
+    if ((int32_t)(now - next_frame_ms) < 0) {
+      continue;
+    }
+    next_frame_ms = now + AMG_FRAME_PERIOD_MS;
+
     if (AMG8833_ReadFrameCelsius(&hi2c1, amg_addr, frame) != HAL_OK) {
       uart_send("ERR_READ\r\n");
-      HAL_Delay(250);
       continue;
     }
 
     uart_send("BEGIN\r\n");
     uart_send_frame_csv(frame);
+    Thermal_AnalyzeFrame8x8(frame, &det);
+    uart_send_meta_csv(&det, servo_angle_placeholder);
     uart_send("END\r\n");
-    HAL_Delay(500);
 #else
 		  JoystickReading r = read_joystick_adc();
 	    

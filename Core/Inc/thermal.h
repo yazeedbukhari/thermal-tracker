@@ -1,11 +1,11 @@
 /*
- * thermal.h — Thermal image processing (bilinear interpolation + centroid)
+ * thermal.h - Thermal frame analysis (dynamic threshold + bbox + centroid)
  *
- * Pure math module with no hardware dependencies. Takes a raw 8x8 thermal
- * frame, upscales it to 64x64 via bilinear interpolation, then extracts a
- * weighted sub-pixel centroid of all pixels above a temperature threshold.
+ * Pure math module with no hardware dependencies. Takes one raw 8x8 thermal
+ * frame (64 values, row-major), computes dynamic-threshold hot-pixel detection,
+ * and outputs bounding box + weighted centroid metadata.
  *
- * Public API:  Thermal_Interpolate, Thermal_Centroid
+ * Public API:  Thermal_AnalyzeFrame8x8
  *
  * Owner:
  */
@@ -13,6 +13,22 @@
 #ifndef INC_THERMAL_H_
 #define INC_THERMAL_H_
 
+#include <stdint.h>
 
+typedef struct {
+    uint8_t target_found;
+    int8_t min_x;
+    int8_t max_x;
+    int8_t min_y;
+    int8_t max_y;
+    float centroid_x;
+    float centroid_y;
+    float avg_temp_c;
+    float threshold_c;
+    float max_temp_c;
+    uint16_t hot_count;
+} ThermalDetection;
+
+void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out);
 
 #endif /* INC_THERMAL_H_ */

@@ -10,8 +10,8 @@
 // pan uses Pin PA6 (TIM3_CH1)
 // tilt uses Pin PA7 (TIM3_CH2)
  
-// pan max left is 180, pan max right is 0
-// tilt max up is 0, tilt max down is 180
+// pan max left is 180, pan max right is 0 ()
+// tilt max up is 0, tilt max down is 180 (clockwise looking at gear goes down)
 
 #include "servo.h"
 #include "config.h"
