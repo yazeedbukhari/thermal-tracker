@@ -4,12 +4,15 @@
  * Initializes TIM3 at 50 Hz and maps floating-point angles (0-180 degrees)
  * to the corresponding pulse width on each timer channel.
  *
- * Owner:
+ * Owner: Yazeed & Ali
  */
 
 // pan uses Pin PA6 (TIM3_CH1)
 // tilt uses Pin PA7 (TIM3_CH2)
  
+// pan max left is 180, pan max right is 0
+// tilt max up is 0, tilt max down is 180
+
 #include "servo.h"
 #include "config.h"
 

@@ -4,7 +4,7 @@
  * Implements sensor probe, initialization, raw frame read, and raw-to-Celsius
  * conversion for all 64 thermal pixels.
  *
- * Owner:
+ * Owner: Ali
  */
 
 #include "amg8833.h"
