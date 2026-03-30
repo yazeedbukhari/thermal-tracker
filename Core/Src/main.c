@@ -17,6 +17,7 @@
 #include "joystick.h"
 #include "servo.h"
 #include "uart_stream.h"
+#include "st7735_cn8_spi_test.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -24,13 +25,15 @@
 #define AMG8833_BRINGUP_TEST 1U
 #define AMG_FRAME_PERIOD_MS 100U  /* AMG8833 configured at 10 FPS */
 #define STREAM_MULTI_OBJECT_BINARY 1U
-#define UPSCALE_W 32U
-#define UPSCALE_H 32U
+#define UPSCALE_W 64U
+#define UPSCALE_H 64U
 #define UPSCALED_STREAM_PERIOD_MS 100U  /* send each sensor frame (~10 FPS) */
 #define Q_TEMP_MIN_C 18.0f
 #define Q_TEMP_MAX_C 35.0f
 #define THERMAL_SERVO_TRACK_TEST 1U
 #define STREAM_OBJ_COUNT THERMAL_MAX_OBJECTS
+#define ST7735_CN8_SPI_BOX_TEST 0U
+#define ST7735_CN8_SPI_LIVE_VIEW 1U
 
 static volatile uint8_t g_next_object_request = 0U;
 static uint8_t g_selected_object = 0U;
@@ -277,6 +280,20 @@ int main(void)
 
   MX_GPIO_Init();
   MX_USART3_UART_Init();
+
+#if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW
+  ST7735_CN8_Test_Init();
+#endif
+
+#if ST7735_CN8_SPI_BOX_TEST
+  ST7735_CN8_Test_DrawBox();
+  uart_send("ST7735 CN8 SPI box test drawn\r\n");
+
+  while (1) {
+    HAL_Delay(1000);
+  }
+#endif
+
 #if AMG8833_BRINGUP_TEST
   MX_I2C1_Init();
 #if THERMAL_SERVO_TRACK_TEST
@@ -300,8 +317,11 @@ int main(void)
   ThermalObjectsResult objs;
   ThermalDetection det;
   uint32_t next_frame_ms = HAL_GetTick();
+  uint8_t tft_render_toggle = 0U;
+#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
   uint32_t next_up_tx_ms = HAL_GetTick();
   uint16_t up_seq = 0;
+#endif
 
   uart_send("AMG8833 bring-up test\r\n");
   if (AMG8833_Probe(&hi2c1, &amg_addr) != HAL_OK) {
@@ -348,17 +368,23 @@ int main(void)
       g_next_object_request = 0U;
     }
     detection_from_object(&det, &objs, g_selected_object);
-    Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
 #if THERMAL_SERVO_TRACK_TEST
     Tracking_UpdateFromDetection(&det);
 #endif
+    Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
+#if ST7735_CN8_SPI_LIVE_VIEW
+    tft_render_toggle ^= 1U;
+    if (tft_render_toggle != 0U) {
+      ST7735_CN8_RenderFrame32x32(upscaled, &objs, g_selected_object);
+    }
+#endif
 
-#if STREAM_MULTI_OBJECT_BINARY
+#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
     if ((int32_t)(now - next_up_tx_ms) >= 0) {
       next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
       uart_send_um64_packet(up_seq++, upscaled, &objs, g_selected_object, (int16_t)(Servo_GetPan() * 10.0f));
     }
-#else
+#elif !ST7735_CN8_SPI_LIVE_VIEW
     uart_send("BEGIN\r\n");
     uart_send_frame_csv(frame);
     uart_send_meta_csv(&det, Servo_GetPan());
