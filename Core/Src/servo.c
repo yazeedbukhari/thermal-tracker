@@ -16,6 +16,8 @@
 #include "servo.h"
 #include "config.h"
 
+#define TILT_MIN_ANGLE_DEG 30.0f
+
 static float current_pan  = INIT_ANGLE;
 static float current_tilt = INIT_ANGLE;
 
@@ -50,6 +52,9 @@ void Servo_SetPan(float angle)
 
 void Servo_SetTilt(float angle)
 {
+    if (angle < TILT_MIN_ANGLE_DEG) {
+        angle = TILT_MIN_ANGLE_DEG;
+    }
     current_tilt = clamp_angle(angle);
     __HAL_TIM_SET_COMPARE(&htim3_servos, TIM_CHANNEL_2, angle_to_ccr(current_tilt));
 }

@@ -23,7 +23,7 @@
 /* Lost-target behavior:
  * 1) Coast briefly in last known direction to recover target.
  * 2) If still lost for >5s, enter scan mode (pan sweep + tilt stepping). */
-#define TRACK_COAST_MS            1400U
+#define TRACK_COAST_MS            700U
 #define TRACK_SCAN_START_MS       3000U
 #define TRACK_SCAN_PAN_DEG_PER_S  45.0f
 #define TRACK_SCAN_TILT_DEG_PER_S 18.0f

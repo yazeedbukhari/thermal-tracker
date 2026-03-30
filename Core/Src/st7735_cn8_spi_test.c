@@ -382,8 +382,9 @@ void ST7735_CN8_RenderFrame32x32(
     return;
   }
 
-  if ((objs->count > 0U) && (selected_idx >= objs->count)) {
-    selected_idx = 0U;
+  uint8_t has_selected = 0U;
+  if ((objs->count > 0U) && (selected_idx < objs->count)) {
+    has_selected = 1U;
   }
 
   for (uint8_t i = 0U; i < THERMAL_MAX_OBJECTS; i++) {
@@ -407,7 +408,7 @@ void ST7735_CN8_RenderFrame32x32(
     if ((bx + bw) > (int16_t)ST7735_WIDTH) bw = (int16_t)ST7735_WIDTH - bx;
     if ((by + bh) > (int16_t)ST7735_HEIGHT) bh = (int16_t)ST7735_HEIGHT - by;
 
-    if (i == selected_idx) {
+    if ((has_selected != 0U) && (i == selected_idx)) {
       st7735_rect((uint16_t)bx, (uint16_t)by, (uint16_t)bw, (uint16_t)bh, RGB565_LIME);
       st7735_draw_cross((int16_t)(TFT_VIEW_X + (obj->centroid_x * (float)scale_x)), (int16_t)(TFT_VIEW_Y + (obj->centroid_y * (float)scale_y)), RGB565_CYAN);
     } else {

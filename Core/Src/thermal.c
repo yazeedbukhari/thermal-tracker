@@ -9,11 +9,11 @@
 
 #include "thermal.h"
 
-#define TEMP_OFFSET_C               4.1f
+#define TEMP_OFFSET_C               4.2f
 #define ABSOLUTE_TARGET_CLAMP_C     32.0f
-#define ABSOLUTE_MIN_TARGET_TEMP_C  25.2f
-#define MIN_HOT_PIXELS              5
-#define CONNECT_OFFSET_C            0.9f
+#define ABSOLUTE_MIN_TARGET_TEMP_C  25.3f
+#define MIN_HOT_PIXELS              4
+#define CONNECT_OFFSET_C            0.7f
 
 static void clear_objects(ThermalObjectsResult *out)
 {
