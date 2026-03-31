@@ -249,6 +249,32 @@ void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out)
     }
 }
 
+void Thermal_UpscaleNearest8x8(
+    const float in8x8[64],
+    float *out,
+    uint16_t out_w,
+    uint16_t out_h
+)
+{
+    if ((in8x8 == 0) || (out == 0) || (out_w == 0U) || (out_h == 0U)) {
+        return;
+    }
+
+    for (uint16_t oy = 0; oy < out_h; oy++) {
+        uint16_t sy = (uint16_t)(((uint32_t)oy * 8U) / out_h);
+        if (sy > 7U) {
+            sy = 7U;
+        }
+        for (uint16_t ox = 0; ox < out_w; ox++) {
+            uint16_t sx = (uint16_t)(((uint32_t)ox * 8U) / out_w);
+            if (sx > 7U) {
+                sx = 7U;
+            }
+            out[(oy * out_w) + ox] = in8x8[(sy * 8U) + sx];
+        }
+    }
+}
+
 void Thermal_UpscaleBilinear8x8(
     const float in8x8[64],
     float *out,

@@ -22,12 +22,13 @@
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
 
 #define AMG8833_BRINGUP_TEST       1U
-#define AMG_FRAME_PERIOD_MS        100U /* AMG8833 configured at 10 FPS */
+#define AMG_FRAME_PERIOD_MS        50U  /* 20 FPS */
 #define STREAM_MULTI_OBJECT_BINARY 1U
-#define UPSCALED_STREAM_PERIOD_MS  100U /* send each sensor frame (~10 FPS) */
+#define UPSCALED_STREAM_PERIOD_MS  50U  /* send each sensor frame (~20 FPS) */
 #define THERMAL_SERVO_TRACK_TEST   1U
 #define ST7735_CN8_SPI_BOX_TEST    0U
 #define ST7735_CN8_SPI_LIVE_VIEW   1U
+#define USE_FAST_NEAREST_UPSCALE   0U
 
 /* Keep in sync with laser.c lock behavior. */
 #define LASER_LOCK_TRACK_REQUIRED 1U
@@ -220,7 +221,11 @@ int main(void)
             Laser_Update(laser_locked);
         }
 
+#if USE_FAST_NEAREST_UPSCALE
+        Thermal_UpscaleNearest8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
+#else
         Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
+#endif
 
 #if ST7735_CN8_SPI_LIVE_VIEW
         ST7735_CN8_RenderFrame32x32(upscaled, &objs, fsm_out.selected_idx);

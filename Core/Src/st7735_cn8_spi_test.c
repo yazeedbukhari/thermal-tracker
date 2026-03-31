@@ -50,6 +50,9 @@
 
 #define THERMAL_Q_MIN_C    18.0f
 #define THERMAL_Q_MAX_C    35.0f
+#define THERMAL_Q_MIN_SPAN 4.0f
+#define THERMAL_Q_ALPHA    0.25f
+#define THERMAL_SHARP_K    0.35f
 #define TFT_VIEW_W         64U
 #define TFT_VIEW_H         64U
 #define TFT_VIEW_X         ((ST7735_WIDTH - TFT_VIEW_W) / 2U)
@@ -60,6 +63,8 @@
 #define TFT_DMA_BYTES      (TFT_DMA_PIXELS * 2U)
 
 static uint16_t s_framebuf[2][TFT_DMA_PIXELS];
+static float s_dyn_lo = THERMAL_Q_MIN_C;
+static float s_dyn_hi = THERMAL_Q_MAX_C;
 static volatile uint8_t s_dma_busy      = 0U;
 static volatile uint8_t s_tx_active_idx = 0U;
 static volatile uint8_t s_pending_valid = 0U;
@@ -305,6 +310,22 @@ static uint8_t quantize_temp_u8(float t)
     return (uint8_t)(n * 255.0f);
 }
 
+static uint8_t quantize_temp_dynamic_u8(float t, float lo, float hi)
+{
+    float n;
+    if (hi <= lo) {
+        return quantize_temp_u8(t);
+    }
+    n = (t - lo) / (hi - lo);
+    if (n < 0.0f) {
+        n = 0.0f;
+    }
+    if (n > 1.0f) {
+        n = 1.0f;
+    }
+    return (uint8_t)(n * 255.0f);
+}
+
 static inline uint16_t rgb565_to_be(uint16_t c)
 {
     return (uint16_t)((c << 8U) | (c >> 8U));
@@ -383,11 +404,64 @@ static void st7735_build_frame(uint8_t frame_idx, const float *upscaled_map,
     uint16_t *fb = s_framebuf[frame_idx];
     const int16_t scale_x = (int16_t)(TFT_VIEW_W / 8U);
     const int16_t scale_y = (int16_t)(TFT_VIEW_H / 8U);
+    float frame_min = 1000.0f;
+    float frame_max = -1000.0f;
+    float target_lo;
+    float target_hi;
+    float span;
+
+    for (uint16_t i = 0U; i < TFT_DMA_PIXELS; i++) {
+        float t = upscaled_map[i];
+        if (t < frame_min) {
+            frame_min = t;
+        }
+        if (t > frame_max) {
+            frame_max = t;
+        }
+    }
+
+    target_lo = frame_min;
+    target_hi = frame_max;
+    span = target_hi - target_lo;
+    if (span < THERMAL_Q_MIN_SPAN) {
+        float mid = 0.5f * (target_lo + target_hi);
+        target_lo = mid - (0.5f * THERMAL_Q_MIN_SPAN);
+        target_hi = mid + (0.5f * THERMAL_Q_MIN_SPAN);
+    }
+    if (target_lo < THERMAL_Q_MIN_C) {
+        target_lo = THERMAL_Q_MIN_C;
+    }
+    if (target_hi > THERMAL_Q_MAX_C) {
+        target_hi = THERMAL_Q_MAX_C;
+    }
+    if ((target_hi - target_lo) < THERMAL_Q_MIN_SPAN) {
+        target_hi = target_lo + THERMAL_Q_MIN_SPAN;
+        if (target_hi > THERMAL_Q_MAX_C) {
+            target_hi = THERMAL_Q_MAX_C;
+            target_lo = target_hi - THERMAL_Q_MIN_SPAN;
+            if (target_lo < THERMAL_Q_MIN_C) {
+                target_lo = THERMAL_Q_MIN_C;
+            }
+        }
+    }
+
+    s_dyn_lo += THERMAL_Q_ALPHA * (target_lo - s_dyn_lo);
+    s_dyn_hi += THERMAL_Q_ALPHA * (target_hi - s_dyn_hi);
 
     for (uint16_t y = 0U; y < TFT_VIEW_H; y++) {
         for (uint16_t x = 0U; x < TFT_VIEW_W; x++) {
-            float t          = upscaled_map[(y * TFT_VIEW_W) + x];
-            uint8_t q        = quantize_temp_u8(t);
+            uint32_t idx = (y * TFT_VIEW_W) + x;
+            float t = upscaled_map[idx];
+            if ((x > 0U) && (x < (TFT_VIEW_W - 1U)) &&
+                (y > 0U) && (y < (TFT_VIEW_H - 1U))) {
+                float n4 = upscaled_map[idx - 1U] +
+                           upscaled_map[idx + 1U] +
+                           upscaled_map[idx - TFT_VIEW_W] +
+                           upscaled_map[idx + TFT_VIEW_W];
+                float avg4 = 0.25f * n4;
+                t = t + (THERMAL_SHARP_K * (t - avg4));
+            }
+            uint8_t q = quantize_temp_dynamic_u8(t, s_dyn_lo, s_dyn_hi);
             fb[(y * TFT_VIEW_W) + x] = rgb565_to_be(heat_color_from_u8(q));
         }
     }
