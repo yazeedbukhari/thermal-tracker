@@ -14,18 +14,17 @@
 
 static float clampf(float v, float lo, float hi)
 {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
     return v;
 }
 
 /* ------------------------------------------------------------------ public  */
 
-void PID_Init(PID_Instance *pid,
-              float kp, float ki, float kd,
-              float integral_limit,
-              float output_limit,
-              float dead_band)
+void PID_Init(PID_Instance *pid, float kp, float ki, float kd, float integral_limit,
+              float output_limit, float dead_band)
 {
     pid->Kp             = kp;
     pid->Ki             = ki;
@@ -38,15 +37,10 @@ void PID_Init(PID_Instance *pid,
     pid->initialized    = 0;
 }
 
-float PID_Update(PID_Instance *pid,
-                 float error,
-                 float dt,
-                 float velocity_est,
-                 uint8_t use_ext_vel)
+float PID_Update(PID_Instance *pid, float error, float dt, float velocity_est, uint8_t use_ext_vel)
 {
     /* Dead-band: suppress output for small errors to avoid servo hunting */
-    if (error > -pid->dead_band && error < pid->dead_band)
-    {
+    if (error > -pid->dead_band && error < pid->dead_band) {
         pid->prev_error  = error;
         pid->initialized = 1;
         return 0.0f;
@@ -57,8 +51,8 @@ float PID_Update(PID_Instance *pid,
 
     /* Integral with anti-windup clamp */
     pid->integral += error * dt;
-    pid->integral  = clampf(pid->integral, -pid->integral_limit, pid->integral_limit);
-    float i_term   = pid->Ki * pid->integral;
+    pid->integral = clampf(pid->integral, -pid->integral_limit, pid->integral_limit);
+    float i_term  = pid->Ki * pid->integral;
 
     /* Derivative
      * On the very first call prev_error is 0, which would produce a large
@@ -68,19 +62,15 @@ float PID_Update(PID_Instance *pid,
      * velocity estimate; otherwise we fall back to finite difference.      */
     float d_term = 0.0f;
 
-    if (pid->initialized)
-    {
+    if (pid->initialized) {
         float derivative;
 
-        if (use_ext_vel)
-        {
+        if (use_ext_vel) {
             /* External estimate already in pixels/s — negate because a
              * positive velocity means the error is shrinking, so we want
              * to damp (oppose) it.                                         */
             derivative = -velocity_est;
-        }
-        else
-        {
+        } else {
             /* Finite difference: rate of change of error                   */
             derivative = (dt > 0.0f) ? ((error - pid->prev_error) / dt) : 0.0f;
         }

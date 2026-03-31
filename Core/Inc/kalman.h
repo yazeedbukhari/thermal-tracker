@@ -24,11 +24,11 @@
 #include <stdint.h>
 
 typedef struct {
-    float x[2];        /* state: [position, velocity]              */
-    float P[4];        /* 2x2 covariance, row-major [P00 P01 P10 P11] */
-    float Q_pos;       /* process noise — position                 */
-    float Q_vel;       /* process noise — velocity                 */
-    float R;           /* measurement noise                        */
+    float x[2];  /* state: [position, velocity]              */
+    float P[4];  /* 2x2 covariance, row-major [P00 P01 P10 P11] */
+    float Q_pos; /* process noise — position                 */
+    float Q_vel; /* process noise — velocity                 */
+    float R;     /* measurement noise                        */
     uint8_t initialized;
 } KalmanAxis;
 

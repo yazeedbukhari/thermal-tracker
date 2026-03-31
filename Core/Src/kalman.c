@@ -14,18 +14,18 @@
 
 void Kalman_Init(KalmanAxis *kf, float q_pos, float q_vel, float r)
 {
-    kf->x[0] = 0.0f;   /* position */
-    kf->x[1] = 0.0f;   /* velocity */
+    kf->x[0] = 0.0f; /* position */
+    kf->x[1] = 0.0f; /* velocity */
 
     /* Initial covariance — large diagonal, no cross-correlation */
-    kf->P[0] = 1.0f;   /* P00 */
-    kf->P[1] = 0.0f;   /* P01 */
-    kf->P[2] = 0.0f;   /* P10 */
-    kf->P[3] = 1.0f;   /* P11 */
+    kf->P[0] = 1.0f; /* P00 */
+    kf->P[1] = 0.0f; /* P01 */
+    kf->P[2] = 0.0f; /* P10 */
+    kf->P[3] = 1.0f; /* P11 */
 
-    kf->Q_pos = q_pos;
-    kf->Q_vel = q_vel;
-    kf->R     = r;
+    kf->Q_pos       = q_pos;
+    kf->Q_vel       = q_vel;
+    kf->R           = r;
     kf->initialized = 0U;
 }
 
@@ -72,8 +72,8 @@ void Kalman_Update(KalmanAxis *kf, float measurement, float dt)
 {
     /* On first measurement, seed the state instead of filtering. */
     if (kf->initialized == 0U) {
-        kf->x[0] = measurement;
-        kf->x[1] = 0.0f;
+        kf->x[0]        = measurement;
+        kf->x[1]        = 0.0f;
         kf->initialized = 1U;
         return;
     }
