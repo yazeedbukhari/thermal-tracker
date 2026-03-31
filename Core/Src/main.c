@@ -398,12 +398,212 @@ static void uart_send_um64_packet(
   HAL_UART_Transmit(&huart3, payload, payload_len, 400);
 }
 
+/* Reset seek state to idle (used in multiple transitions). */
+static void seek_state_reset(void)
+{
+  g_seek_other_object = 0U;
+  g_seek_has_ref = 0U;
+  g_selected_missing_since_ms = 0U;
+  g_seek_enter_ms = 0U;
+  g_seek_visible_since_ms = 0U;
+}
+
+/*
+ * process_button_request — handle g_next_object_request from ISR.
+ * If multiple objects are visible, cycle to the next ID.
+ * If only one (or none), toggle seek-other mode.
+ */
+static void process_button_request(const ThermalObjectsResult *objs, uint32_t now)
+{
+  if (g_next_object_request == 0U) return;
+  g_next_object_request = 0U;
+
+  if (objs->count > 1U) {
+    g_selected_object_id = pick_next_visible_id(objs, g_selected_object_id);
+    seek_state_reset();
+  } else {
+    if (g_seek_other_object == 0U) {
+      int8_t current_idx = find_obj_index_by_id(objs, g_selected_object_id);
+      g_seek_other_object = 1U;
+      g_seek_has_ref = 0U;
+      if ((current_idx >= 0) && (objs->objects[current_idx].valid != 0U)) {
+        g_seek_ref_cx = objs->objects[current_idx].centroid_x;
+        g_seek_ref_cy = objs->objects[current_idx].centroid_y;
+        g_seek_has_ref = 1U;
+      }
+      g_seek_enter_ms = now;
+      g_seek_visible_since_ms = 0U;
+    } else {
+      seek_state_reset();
+    }
+  }
+}
+
+/*
+ * update_seek_state — when seek-other is active, look for a new target.
+ * Switches to the first object that is either a different ID or far enough
+ * from the reference position. Falls back to time-based acceptance.
+ */
+static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
+{
+  if ((g_seek_other_object == 0U) || (objs->count == 0U)) {
+    g_seek_visible_since_ms = 0U;
+    return;
+  }
+
+  uint8_t switched = 0U;
+  for (uint8_t i = 0U; i < objs->count; i++) {
+    if (objs->objects[i].valid == 0U) continue;
+
+    uint8_t id_diff = (g_obj_ids[i] != g_selected_object_id) ? 1U : 0U;
+    uint8_t far_enough = 0U;
+    if (g_seek_has_ref != 0U) {
+      float md = absf_local(objs->objects[i].centroid_x - g_seek_ref_cx) +
+                 absf_local(objs->objects[i].centroid_y - g_seek_ref_cy);
+      if (md >= SEEK_OTHER_MIN_MANHATTAN) far_enough = 1U;
+    }
+
+    if ((id_diff != 0U) || (far_enough != 0U)) {
+      g_selected_object_id = g_obj_ids[i];
+      seek_state_reset();
+      switched = 1U;
+      break;
+    }
+  }
+
+  if (switched != 0U) {
+    g_seek_visible_since_ms = 0U;
+    return;
+  }
+
+  if (g_seek_visible_since_ms == 0U) g_seek_visible_since_ms = now;
+
+  /* Fallback: lock onto something stable after timeout. */
+  if ((now - g_seek_visible_since_ms) >= SEEK_ACCEPT_VISIBLE_MS) {
+    for (uint8_t i = 0U; i < objs->count; i++) {
+      if (objs->objects[i].valid != 0U) {
+        g_selected_object_id = g_obj_ids[i];
+        seek_state_reset();
+        return;
+      }
+    }
+  }
+
+  /* Fallback: no reference, multiple objects — just pick next. */
+  if ((g_seek_has_ref == 0U) && (objs->count > 1U)) {
+    g_selected_object_id = pick_next_visible_id(objs, g_selected_object_id);
+    seek_state_reset();
+  }
+}
+
+/*
+ * resolve_selected_object — map g_selected_object_id to a frame index.
+ * Falls back to object 0 after SELECT_FALLBACK_LAG_MS if the tracked ID
+ * disappears from the current frame.
+ * Sets g_selected_object (0xFF = no target).
+ */
+static void resolve_selected_object(const ThermalObjectsResult *objs, uint32_t now)
+{
+  int8_t sel_idx = find_obj_index_by_id(objs, g_selected_object_id);
+
+  if (sel_idx >= 0) {
+    g_selected_missing_since_ms = 0U;
+  } else if ((objs->count > 0U) && (g_seek_other_object == 0U)) {
+    if (g_selected_missing_since_ms == 0U) g_selected_missing_since_ms = now;
+
+    if ((now - g_selected_missing_since_ms) >= SELECT_FALLBACK_LAG_MS) {
+      g_selected_object_id = g_obj_ids[0];
+      sel_idx = 0;
+      g_selected_missing_since_ms = 0U;
+    }
+  } else {
+    g_selected_missing_since_ms = 0U;
+  }
+
+  g_selected_object = (sel_idx < 0) ? 0xFFU : (uint8_t)sel_idx;
+}
+
+/*
+ * build_detection — fill det from the selected object, then apply seek
+ * overrides: grace window keeps current object visible briefly; after that
+ * forces target_found=0 to trigger the scan sweep.
+ */
+static void build_detection(ThermalDetection *det, const ThermalObjectsResult *objs, uint32_t now)
+{
+  if (g_selected_object == 0xFFU) {
+    detection_from_object(det, objs, 0xFFU);
+    det->target_found = 0U;
+    det->min_x = -1; det->max_x = -1;
+    det->min_y = -1; det->max_y = -1;
+    det->centroid_x = -1.0f; det->centroid_y = -1.0f;
+  } else {
+    detection_from_object(det, objs, g_selected_object);
+  }
+
+  if ((g_seek_other_object != 0U) && (objs->count <= 1U)) {
+    uint32_t seek_ms = now - g_seek_enter_ms;
+    if (seek_ms < SEEK_PRE_SCAN_WAIT_MS) {
+      /* Grace window: stay on current visible object. */
+      if ((det->target_found == 0U) && (objs->count > 0U) && (objs->objects[0].valid != 0U)) {
+        detection_from_object(det, objs, 0U);
+      }
+    } else {
+      /* Force lost-target to trigger scan sweep. */
+      det->target_found = 0U;
+      det->min_x = -1; det->max_x = -1;
+      det->min_y = -1; det->max_y = -1;
+      det->centroid_x = -1.0f; det->centroid_y = -1.0f;
+    }
+  }
+}
+
+/*
+ * render_and_stream — upscale frame, render to TFT, send UART packet.
+ * next_up_tx_ms and up_seq are owned here as statics.
+ */
+static void render_and_stream(
+  const float *frame,
+  float *upscaled,
+  const ThermalObjectsResult *objs,
+  const ThermalDetection *det,
+  uint32_t now
+)
+{
+#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
+  static uint32_t next_up_tx_ms = 0U;
+  static uint16_t up_seq = 0U;
+#endif
+  static uint8_t tft_render_toggle = 0U;
+
+  Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
+
+#if ST7735_CN8_SPI_LIVE_VIEW
+  tft_render_toggle ^= 1U;
+  if (tft_render_toggle != 0U) {
+    ST7735_CN8_RenderFrame32x32(upscaled, objs, g_selected_object);
+  }
+#endif
+
+#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
+  if ((int32_t)(now - next_up_tx_ms) >= 0) {
+    next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
+    uart_send_um64_packet(up_seq++, upscaled, objs, g_selected_object, (int16_t)(Servo_GetPan() * 10.0f));
+  }
+#elif !ST7735_CN8_SPI_LIVE_VIEW
+  uart_send("BEGIN\r\n");
+  uart_send_frame_csv(frame);
+  uart_send_meta_csv(det, Servo_GetPan());
+  uart_send("END\r\n");
+#else
+  (void)det;
+  (void)now;
+#endif
+}
+
 int main(void)
 {
   HAL_Init();
-
   SystemClock_Config();
-
   MX_GPIO_Init();
   MX_USART3_UART_Init();
 
@@ -414,10 +614,7 @@ int main(void)
 #if ST7735_CN8_SPI_BOX_TEST
   ST7735_CN8_Test_DrawBox();
   uart_send("ST7735 CN8 SPI box test drawn\r\n");
-
-  while (1) {
-    HAL_Delay(1000);
-  }
+  while (1) { HAL_Delay(1000); }
 #endif
 
 #if AMG8833_BRINGUP_TEST
@@ -443,28 +640,17 @@ int main(void)
   ThermalObjectsResult objs;
   ThermalDetection det;
   uint32_t next_frame_ms = HAL_GetTick();
-  uint8_t tft_render_toggle = 0U;
   g_selected_object_id = OBJ_ID_NONE;
-#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
-  uint32_t next_up_tx_ms = HAL_GetTick();
-  uint16_t up_seq = 0;
-#endif
 
   uart_send("AMG8833 bring-up test\r\n");
   if (AMG8833_Probe(&hi2c1, &amg_addr) != HAL_OK) {
     uart_send("ERR_PROBE (check wiring/address)\r\n");
-    while (1) {
-      HAL_Delay(100);
-    }
+    while (1) { HAL_Delay(100); }
   }
-
   if (AMG8833_Init(&hi2c1, amg_addr) != HAL_OK) {
     uart_send("ERR_INIT\r\n");
-    while (1) {
-      HAL_Delay(100);
-    }
+    while (1) { HAL_Delay(100); }
   }
-
   char addr_msg[32];
   (void)snprintf(addr_msg, sizeof(addr_msg), "READY addr=0x%02X\r\n", amg_addr);
   uart_send(addr_msg);
@@ -474,9 +660,7 @@ int main(void)
   {
 #if AMG8833_BRINGUP_TEST
     uint32_t now = HAL_GetTick();
-    if ((int32_t)(now - next_frame_ms) < 0) {
-      continue;
-    }
+    if ((int32_t)(now - next_frame_ms) < 0) continue;
     next_frame_ms = now + AMG_FRAME_PERIOD_MS;
 
     if (AMG8833_ReadFrameCelsius(&hi2c1, amg_addr, frame) != HAL_OK) {
@@ -488,187 +672,21 @@ int main(void)
     associate_object_ids(&objs, now);
     g_selected_object = 0xFFU;
 
-    if (g_next_object_request != 0U) {
-      g_next_object_request = 0U;
+    process_button_request(&objs, now);
+    update_seek_state(&objs, now);
+    resolve_selected_object(&objs, now);
+    build_detection(&det, &objs, now);
 
-      if (objs.count > 1U) {
-        /* Multiple objects now: switch to next visible ID. */
-        g_selected_object_id = pick_next_visible_id(&objs, g_selected_object_id);
-        g_seek_other_object = 0U;
-        g_seek_has_ref = 0U;
-        g_selected_missing_since_ms = 0U;
-        g_seek_enter_ms = 0U;
-        g_seek_visible_since_ms = 0U;
-      } else {
-        /* Single/no object: toggle seek-other mode.
-         * In seek mode, tracking will scan until another object appears.
-         * Pressing button again exits seek mode. */
-        if (g_seek_other_object == 0U) {
-          int8_t current_idx = find_obj_index_by_id(&objs, g_selected_object_id);
-          g_seek_other_object = 1U;
-          g_seek_has_ref = 0U;
-          if ((current_idx >= 0) && (objs.objects[current_idx].valid != 0U)) {
-            g_seek_ref_cx = objs.objects[current_idx].centroid_x;
-            g_seek_ref_cy = objs.objects[current_idx].centroid_y;
-            g_seek_has_ref = 1U;
-          }
-          g_seek_enter_ms = now;
-          g_seek_visible_since_ms = 0U;
-        } else {
-          g_seek_other_object = 0U;
-          g_seek_has_ref = 0U;
-          g_selected_missing_since_ms = 0U;
-          g_seek_enter_ms = 0U;
-          g_seek_visible_since_ms = 0U;
-        }
-      }
-    }
-
-    if ((g_seek_other_object != 0U) && (objs.count > 0U)) {
-      uint8_t switched = 0U;
-      for (uint8_t i = 0U; i < objs.count; i++) {
-        if (objs.objects[i].valid == 0U) continue;
-
-        uint8_t id_diff = (g_obj_ids[i] != g_selected_object_id) ? 1U : 0U;
-        uint8_t far_enough = 0U;
-        if (g_seek_has_ref != 0U) {
-          float md = absf_local(objs.objects[i].centroid_x - g_seek_ref_cx) +
-                     absf_local(objs.objects[i].centroid_y - g_seek_ref_cy);
-          if (md >= SEEK_OTHER_MIN_MANHATTAN) {
-            far_enough = 1U;
-          }
-        }
-
-        if ((id_diff != 0U) || (far_enough != 0U)) {
-          g_selected_object_id = g_obj_ids[i];
-          g_seek_other_object = 0U;
-          g_seek_has_ref = 0U;
-          g_selected_missing_since_ms = 0U;
-          g_seek_enter_ms = 0U;
-          g_seek_visible_since_ms = 0U;
-          switched = 1U;
-          break;
-        }
-      }
-
-      if (switched == 0U) {
-        if (g_seek_visible_since_ms == 0U) {
-          g_seek_visible_since_ms = now;
-        }
-
-        /* Fallback: if something is visible stably for a short time, lock it
-         * so scan does not keep running forever on borderline association. */
-        if ((now - g_seek_visible_since_ms) >= SEEK_ACCEPT_VISIBLE_MS) {
-          for (uint8_t i = 0U; i < objs.count; i++) {
-            if (objs.objects[i].valid != 0U) {
-              g_selected_object_id = g_obj_ids[i];
-              g_seek_other_object = 0U;
-              g_seek_has_ref = 0U;
-              g_selected_missing_since_ms = 0U;
-              g_seek_enter_ms = 0U;
-              g_seek_visible_since_ms = 0U;
-              switched = 1U;
-              break;
-            }
-          }
-        }
-      } else {
-        g_seek_visible_since_ms = 0U;
-      }
-
-      if ((switched == 0U) && (g_seek_has_ref == 0U) && (objs.count > 1U)) {
-        /* Fallback: if no reference exists, allow switching to next visible. */
-        g_selected_object_id = pick_next_visible_id(&objs, g_selected_object_id);
-        g_seek_other_object = 0U;
-        g_seek_has_ref = 0U;
-        g_selected_missing_since_ms = 0U;
-        g_seek_enter_ms = 0U;
-        g_seek_visible_since_ms = 0U;
-      }
-    } else {
-      g_seek_visible_since_ms = 0U;
-    }
-
-    {
-      int8_t sel_idx = find_obj_index_by_id(&objs, g_selected_object_id);
-      if (sel_idx >= 0) {
-        g_selected_missing_since_ms = 0U;
-      } else if ((objs.count > 0U) && (g_seek_other_object == 0U)) {
-        if (g_selected_missing_since_ms == 0U) {
-          g_selected_missing_since_ms = now;
-        }
-
-        if ((now - g_selected_missing_since_ms) >= SELECT_FALLBACK_LAG_MS) {
-          g_selected_object_id = g_obj_ids[0];
-          sel_idx = 0;
-          g_selected_missing_since_ms = 0U;
-        }
-      } else {
-        g_selected_missing_since_ms = 0U;
-      }
-      g_selected_object = (sel_idx < 0) ? 0xFFU : (uint8_t)sel_idx;
-    }
-
-    if (g_selected_object == 0xFFU) {
-      detection_from_object(&det, &objs, 0xFFU);
-      det.target_found = 0U;
-      det.min_x = -1;
-      det.max_x = -1;
-      det.min_y = -1;
-      det.max_y = -1;
-      det.centroid_x = -1.0f;
-      det.centroid_y = -1.0f;
-    } else {
-      detection_from_object(&det, &objs, g_selected_object);
-    }
-
-    if ((g_seek_other_object != 0U) && (objs.count <= 1U)) {
-      uint32_t seek_ms = now - g_seek_enter_ms;
-      if (seek_ms < SEEK_PRE_SCAN_WAIT_MS) {
-        /* Grace window: keep tracking any currently visible object while
-         * waiting for another object to appear. */
-        if ((det.target_found == 0U) && (objs.count > 0U) && (objs.objects[0].valid != 0U)) {
-          detection_from_object(&det, &objs, 0U);
-        }
-      } else {
-        /* After grace window, force lost-target behavior to trigger scan. */
-        det.target_found = 0U;
-        det.min_x = -1;
-        det.max_x = -1;
-        det.min_y = -1;
-        det.max_y = -1;
-        det.centroid_x = -1.0f;
-        det.centroid_y = -1.0f;
-      }
-    }
 #if THERMAL_SERVO_TRACK_TEST
     Tracking_UpdateFromDetection(&det);
 #endif
-    Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
-#if ST7735_CN8_SPI_LIVE_VIEW
-    tft_render_toggle ^= 1U;
-    if (tft_render_toggle != 0U) {
-      ST7735_CN8_RenderFrame32x32(upscaled, &objs, g_selected_object);
-    }
-#endif
+    render_and_stream(frame, upscaled, &objs, &det, now);
 
-#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
-    if ((int32_t)(now - next_up_tx_ms) >= 0) {
-      next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
-      uart_send_um64_packet(up_seq++, upscaled, &objs, g_selected_object, (int16_t)(Servo_GetPan() * 10.0f));
-    }
-#elif !ST7735_CN8_SPI_LIVE_VIEW
-    uart_send("BEGIN\r\n");
-    uart_send_frame_csv(frame);
-    uart_send_meta_csv(&det, Servo_GetPan());
-    uart_send("END\r\n");
-#endif
 #else
-		  JoystickReading r = read_joystick_adc();
-	    
+    JoystickReading r = read_joystick_adc();
     Servo_SetPan(Servo_GetPan() + r.vr_x);
     Servo_SetTilt(Servo_GetTilt() + r.vr_y);
-		  HAL_Delay(1);
+    HAL_Delay(1);
 #endif
   }
 }
