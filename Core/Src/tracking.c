@@ -23,8 +23,8 @@
 /* Lost-target behavior:
  * 1) Coast briefly in last known direction to recover target.
  * 2) If still lost for >5s, enter scan mode (pan sweep + tilt stepping). */
-#define TRACK_COAST_MS            700U
-#define TRACK_SCAN_START_MS       3000U
+#define TRACK_COAST_MS            1000U
+#define TRACK_SCAN_START_MS       3400U
 #define TRACK_SCAN_PAN_DEG_PER_S  45.0f
 #define TRACK_SCAN_TILT_DEG_PER_S 18.0f
 #define TRACK_SCAN_PAN_MIN        12.0f
@@ -164,7 +164,6 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
             Servo_SetPan(pan);
             Servo_SetTilt(tilt);
             has_prev_centroid = 0U;
-            has_prev_cmd = 0U;
             return;
         }
 

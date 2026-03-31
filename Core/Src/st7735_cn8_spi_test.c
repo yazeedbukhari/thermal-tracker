@@ -33,8 +33,8 @@
 #define ST7735_Y_OFFSET         1U
 /* 0 = normal mapping, 1 = swap X/Y addressing for rotated panels. */
 #define ST7735_SWAP_XY          0U
-/* BGR bit is commonly needed on ST7735S modules. */
-#define ST7735_MADCTL_VALUE     0x08U
+/* BGR + MX: fixes left/right mirrored mapping on this panel variant. */
+#define ST7735_MADCTL_VALUE     0x48U
 
 #define ST7735_SWRESET          0x01U
 #define ST7735_SLPOUT           0x11U

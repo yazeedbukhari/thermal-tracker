@@ -18,6 +18,7 @@
 #include "servo.h"
 #include "uart_stream.h"
 #include "st7735_cn8_spi_test.h"
+#include "laser.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -40,7 +41,7 @@
 #define SEEK_OTHER_MIN_MANHATTAN 1.4f
 #define SELECT_FALLBACK_LAG_MS 1200U
 #define SEEK_PRE_SCAN_WAIT_MS 2200U
-#define SEEK_ACCEPT_VISIBLE_MS 600U
+#define SEEK_ACCEPT_VISIBLE_MS 250U
 
 static volatile uint8_t g_next_object_request = 0U;
 static uint8_t g_selected_object = 0U;
@@ -406,6 +407,7 @@ int main(void)
 
   MX_GPIO_Init();
   MX_USART3_UART_Init();
+  Laser_Init();
 
 #if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW
   ST7735_CN8_Test_Init();
@@ -445,7 +447,7 @@ int main(void)
   uint32_t next_frame_ms = HAL_GetTick();
   uint8_t tft_render_toggle = 0U;
   g_selected_object_id = OBJ_ID_NONE;
-#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
+#if STREAM_MULTI_OBJECT_BINARY
   uint32_t next_up_tx_ms = HAL_GetTick();
   uint16_t up_seq = 0;
 #endif
@@ -644,6 +646,15 @@ int main(void)
 #if THERMAL_SERVO_TRACK_TEST
     Tracking_UpdateFromDetection(&det);
 #endif
+    {
+      uint8_t laser_locked = 0U;
+      if ((g_seek_other_object == 0U) &&
+          (g_selected_object != 0xFFU) &&
+          (det.target_found != 0U)) {
+        laser_locked = 1U;
+      }
+      Laser_Update(laser_locked);
+    }
     Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
 #if ST7735_CN8_SPI_LIVE_VIEW
     tft_render_toggle ^= 1U;
@@ -652,7 +663,7 @@ int main(void)
     }
 #endif
 
-#if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
+#if STREAM_MULTI_OBJECT_BINARY
     if ((int32_t)(now - next_up_tx_ms) >= 0) {
       next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
       uart_send_um64_packet(up_seq++, upscaled, &objs, g_selected_object, (int16_t)(Servo_GetPan() * 10.0f));
@@ -665,6 +676,7 @@ int main(void)
 #endif
 #else
 		  JoystickReading r = read_joystick_adc();
+    Laser_Update(0U);
 	    
     Servo_SetPan(Servo_GetPan() + r.vr_x);
     Servo_SetTilt(Servo_GetTilt() + r.vr_y);

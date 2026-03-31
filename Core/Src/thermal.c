@@ -9,9 +9,9 @@
 
 #include "thermal.h"
 
-#define TEMP_OFFSET_C               4.2f
+#define TEMP_OFFSET_C               5.5f
 #define ABSOLUTE_TARGET_CLAMP_C     32.0f
-#define ABSOLUTE_MIN_TARGET_TEMP_C  25.3f
+#define ABSOLUTE_MIN_TARGET_TEMP_C  24.0f
 #define MIN_HOT_PIXELS              4
 #define CONNECT_OFFSET_C            0.7f
 
