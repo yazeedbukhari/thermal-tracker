@@ -182,8 +182,10 @@ static void handle_manual_toggle(const FSM_Input *in, uint32_t now)
     if (ctx.state == FSM_STATE_MANUAL) {
         ctx.state = FSM_STATE_FALLBACK;
         ctx.fallback_enter_ms = now;
+        state_manual = 0;
     } else {
         ctx.state = FSM_STATE_MANUAL;
+        state_manual = 1;
     }
 }
 

@@ -26,6 +26,8 @@
 #define FSM_SEEK_ACCEPT_VISIBLE_MS 600U    /* lock visible obj after this      */
 #define FSM_FALLBACK_LAG_MS        1200U   /* wait before reassigning to [0]   */
 
+extern int state_manual;
+
 typedef enum {
     FSM_STATE_TRACK = 0,   /* locked onto selected object ID            */
     FSM_STATE_SEEK,        /* button pressed, scanning for different obj */

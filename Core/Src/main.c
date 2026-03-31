@@ -19,6 +19,7 @@
 #include "uart_stream.h"
 #include "st7735_cn8_spi_test.h"
 #include "fsm.h"
+#include "kalman.h"
 #include <stdio.h>
 
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
@@ -30,8 +31,43 @@
 #define ST7735_CN8_SPI_BOX_TEST 0U
 #define ST7735_CN8_SPI_LIVE_VIEW 1U
 
+/* Kalman filter tuning — process and measurement noise */
+#define KALMAN_Q_POS   0.01f   /* process noise: position (tune for responsiveness) */
+#define KALMAN_Q_VEL   0.01f   /* process noise: velocity                          */
+#define KALMAN_R       0.5f    /* measurement noise: centroid jitter               */
+
 static volatile uint8_t g_next_object_request = 0U;
 static volatile uint32_t g_last_b1_ms = 0U;
+
+int state_manual = 0; 
+
+/* ---- Kalman helper ---- */
+
+static void apply_kalman_filter(KalmanAxis *kalman_cx, KalmanAxis *kalman_cy,
+                                const FSM_Output *fsm_out, ThermalDetection *filtered_det,
+                                uint32_t now_ms, uint32_t *last_frame_ms)
+{
+    float dt_s = (float)(now_ms - *last_frame_ms) * 0.001f;
+    if (dt_s < 0.001f) dt_s = 0.1f;  /* fallback for first frame */
+    *last_frame_ms = now_ms;
+
+    if (fsm_out->det.target_found != 0U) {
+        /* Target visible: update filters with measurement */
+        Kalman_Update(kalman_cx, fsm_out->det.centroid_x, dt_s);
+        Kalman_Update(kalman_cy, fsm_out->det.centroid_y, dt_s);
+    } else {
+        /* Target lost: prediction-only (coast with velocity estimate) */
+        Kalman_Predict(kalman_cx, dt_s);
+        Kalman_Predict(kalman_cy, dt_s);
+    }
+
+    /* Copy filtered detection for downstream (Tracking module) */
+    *filtered_det = fsm_out->det;
+    if (fsm_out->det.target_found != 0U) {
+        filtered_det->centroid_x = Kalman_GetPosition(kalman_cx);
+        filtered_det->centroid_y = Kalman_GetPosition(kalman_cy);
+    }
+}
 
 int main(void)
 {
@@ -79,7 +115,16 @@ int main(void)
   ThermalObjectsResult objs;
   FSM_Input  fsm_in;
   FSM_Output fsm_out;
+
+  /* Kalman filters: one per axis for centroid smoothing */
+  KalmanAxis kalman_cx, kalman_cy;
+  Kalman_Init(&kalman_cx, KALMAN_Q_POS, KALMAN_Q_VEL, KALMAN_R);
+  Kalman_Init(&kalman_cy, KALMAN_Q_POS, KALMAN_Q_VEL, KALMAN_R);
+
+  ThermalDetection filtered_det;  /* Kalman output goes here */
+
   uint32_t next_frame_ms = HAL_GetTick();
+  uint32_t last_frame_ms = next_frame_ms;
   uint8_t tft_render_toggle = 0U;
 #if STREAM_MULTI_OBJECT_BINARY && !ST7735_CN8_SPI_LIVE_VIEW
   uint32_t next_up_tx_ms = HAL_GetTick();
@@ -108,6 +153,16 @@ int main(void)
 
   while (1)
   {
+    if (state_manual) 
+    {
+      JoystickReading r = read_joystick_adc();
+        
+      Servo_SetPan(Servo_GetPan() + r.vr_x);
+      Servo_SetTilt(Servo_GetTilt() + r.vr_y);
+      HAL_Delay(1);
+      continue;
+    }
+
 #if AMG8833_BRINGUP_TEST
     uint32_t now = HAL_GetTick();
     if ((int32_t)(now - next_frame_ms) < 0) {
@@ -133,8 +188,11 @@ int main(void)
 
     FSM_Update(&fsm_in, &fsm_out);
 
+    /* ---- Kalman filter: smooth & estimate velocity ---- */
+    apply_kalman_filter(&kalman_cx, &kalman_cy, &fsm_out, &filtered_det, now, &last_frame_ms);
+
 #if THERMAL_SERVO_TRACK_TEST
-    Tracking_UpdateFromDetection(&fsm_out.det);
+    Tracking_UpdateFromDetection(&filtered_det);
 #endif
     Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
 #if ST7735_CN8_SPI_LIVE_VIEW
@@ -155,12 +213,6 @@ int main(void)
     uart_send_meta_csv(&fsm_out.det, Servo_GetPan());
     uart_send("END\r\n");
 #endif
-#else
-		  JoystickReading r = read_joystick_adc();
-	    
-    Servo_SetPan(Servo_GetPan() + r.vr_x);
-    Servo_SetTilt(Servo_GetTilt() + r.vr_y);
-		  HAL_Delay(1);
 #endif
   }
 }
