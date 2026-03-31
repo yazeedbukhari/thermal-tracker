@@ -62,6 +62,18 @@ void Error_Handler(void);
 #define LD2_Pin GPIO_PIN_7
 #define LD2_GPIO_Port GPIOB
 
+#define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
+#define AMG8833_BRINGUP_TEST 1U
+#define AMG_FRAME_PERIOD_MS 100U  /* AMG8833 configured at 10 FPS */
+#define STREAM_MULTI_OBJECT_BINARY 1U
+#define UPSCALE_W 64U
+#define UPSCALE_H 64U
+#define UPSCALED_STREAM_PERIOD_MS 100U  /* send each sensor frame (~10 FPS) */
+#define THERMAL_SERVO_TRACK_TEST 1U
+#define ST7735_CN8_SPI_BOX_TEST 0U
+#define ST7735_CN8_SPI_LIVE_VIEW 1U
+#define AMG8833_PIXEL_COUNT     64U
+
 #ifdef __cplusplus
 }
 #endif
