@@ -173,198 +173,179 @@ static void fill_detection(ThermalDetection *det,
     det->centroid_y = obj->centroid_y;
 }
 
-/* ---- public API ---- */
+/* ---- state helpers ---- */
 
-void FSM_Init(void)
+static void handle_manual_toggle(const FSM_Input *in, uint32_t now)
 {
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.state       = FSM_STATE_TRACK;
-    ctx.selected_id = OBJ_ID_NONE;
-    ctx.selected_idx = 0xFFU;
+    if (!in->btn_released) return;
+
+    if (ctx.state == FSM_STATE_MANUAL) {
+        ctx.state = FSM_STATE_FALLBACK;
+        ctx.fallback_enter_ms = now;
+    } else {
+        ctx.state = FSM_STATE_MANUAL;
+    }
 }
 
-void FSM_Update(const FSM_Input *in, FSM_Output *out)
+static void handle_btn_next(const FSM_Input *in, const ThermalObjectsResult *objs, uint32_t now)
 {
-    const ThermalObjectsResult *objs = in->objs;
-    uint32_t now = in->now_ms;
+    if (!(in->btn_next) || (ctx.state == FSM_STATE_MANUAL)) return;
 
-    /* ---- ID association (runs every frame) ---- */
-    associate_ids(objs, now);
-
-    /* ---- manual toggle (highest priority) ---- */
-    if (in->btn_released) {
-        if (ctx.state == FSM_STATE_MANUAL) {
-            ctx.state = FSM_STATE_FALLBACK;
-            ctx.fallback_enter_ms = now;
-        } else {
-            ctx.state = FSM_STATE_MANUAL;
-        }
-    }
-
-    /* ---- btn_next: cycle / seek ---- */
-    if ((in->btn_next) && (ctx.state != FSM_STATE_MANUAL)) {
-        if (objs->count > 1U) {
-            /* multiple objects visible: cycle to next */
-            ctx.selected_id = pick_next_visible_id(objs, ctx.selected_id);
+    if (objs->count > 1U) {
+        /* multiple objects visible: cycle to next */
+        ctx.selected_id = pick_next_visible_id(objs, ctx.selected_id);
+        ctx.state = FSM_STATE_TRACK;
+        ctx.fallback_enter_ms = 0U;
+        ctx.seek_enter_ms = 0U;
+        ctx.seek_has_ref = 0U;
+        ctx.seek_visible_since_ms = 0U;
+    } else {
+        /* single/no object: toggle seek mode */
+        if (ctx.state == FSM_STATE_SEEK) {
+            /* cancel seek → back to track */
             ctx.state = FSM_STATE_TRACK;
-            ctx.fallback_enter_ms = 0U;
-            ctx.seek_enter_ms = 0U;
             ctx.seek_has_ref = 0U;
+            ctx.seek_enter_ms = 0U;
             ctx.seek_visible_since_ms = 0U;
         } else {
-            /* single/no object: toggle seek mode */
-            if (ctx.state == FSM_STATE_SEEK) {
-                /* cancel seek → back to track */
+            ctx.state = FSM_STATE_SEEK;
+            ctx.seek_enter_ms = now;
+            ctx.seek_visible_since_ms = 0U;
+            ctx.seek_has_ref = 0U;
+
+            int8_t ci = find_idx_by_id(objs, ctx.selected_id);
+            if ((ci >= 0) && (objs->objects[ci].valid != 0U)) {
+                ctx.seek_ref_cx = objs->objects[ci].centroid_x;
+                ctx.seek_ref_cy = objs->objects[ci].centroid_y;
+                ctx.seek_has_ref = 1U;
+            }
+        }
+    }
+}
+
+static void update_track_state(const ThermalObjectsResult *objs, uint32_t now)
+{
+    int8_t si = find_idx_by_id(objs, ctx.selected_id);
+    if (si >= 0) {
+        ctx.selected_idx = (uint8_t)si;
+    } else if (objs->count > 0U) {
+        /* selected ID not visible — enter fallback */
+        ctx.state = FSM_STATE_FALLBACK;
+        ctx.fallback_enter_ms = now;
+        ctx.selected_idx = 0xFFU;
+    } else {
+        ctx.selected_idx = 0xFFU;
+    }
+}
+
+static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
+{
+    uint8_t switched = 0U;
+
+    /* look for a different / far-enough object */
+    if (objs->count > 0U) {
+        for (uint8_t i = 0U; i < objs->count; i++) {
+            if (objs->objects[i].valid == 0U) continue;
+
+            uint8_t id_diff = (ctx.obj_ids[i] != ctx.selected_id) ? 1U : 0U;
+            uint8_t far_enough = 0U;
+            if (ctx.seek_has_ref != 0U) {
+                float md = absf(objs->objects[i].centroid_x - ctx.seek_ref_cx) +
+                           absf(objs->objects[i].centroid_y - ctx.seek_ref_cy);
+                if (md >= FSM_SEEK_MIN_MANHATTAN)
+                    far_enough = 1U;
+            }
+
+            if ((id_diff != 0U) || (far_enough != 0U)) {
+                ctx.selected_id = ctx.obj_ids[i];
                 ctx.state = FSM_STATE_TRACK;
                 ctx.seek_has_ref = 0U;
                 ctx.seek_enter_ms = 0U;
                 ctx.seek_visible_since_ms = 0U;
-            } else {
-                ctx.state = FSM_STATE_SEEK;
-                ctx.seek_enter_ms = now;
-                ctx.seek_visible_since_ms = 0U;
-                ctx.seek_has_ref = 0U;
-
-                int8_t ci = find_idx_by_id(objs, ctx.selected_id);
-                if ((ci >= 0) && (objs->objects[ci].valid != 0U)) {
-                    ctx.seek_ref_cx = objs->objects[ci].centroid_x;
-                    ctx.seek_ref_cy = objs->objects[ci].centroid_y;
-                    ctx.seek_has_ref = 1U;
-                }
+                ctx.fallback_enter_ms = 0U;
+                switched = 1U;
+                break;
             }
         }
-    }
 
-    /* ---- state logic ---- */
-    switch (ctx.state) {
+        if (switched == 0U) {
+            /* stable-visible fallback */
+            if (ctx.seek_visible_since_ms == 0U)
+                ctx.seek_visible_since_ms = now;
 
-    case FSM_STATE_TRACK: {
-        int8_t si = find_idx_by_id(objs, ctx.selected_id);
-        if (si >= 0) {
-            ctx.selected_idx = (uint8_t)si;
-        } else if (objs->count > 0U) {
-            /* selected ID not visible — enter fallback */
-            ctx.state = FSM_STATE_FALLBACK;
-            ctx.fallback_enter_ms = now;
-            ctx.selected_idx = 0xFFU;
-        } else {
-            ctx.selected_idx = 0xFFU;
-        }
-        break;
-    }
-
-    case FSM_STATE_SEEK: {
-        uint8_t switched = 0U;
-
-        /* look for a different / far-enough object */
-        if (objs->count > 0U) {
-            for (uint8_t i = 0U; i < objs->count; i++) {
-                if (objs->objects[i].valid == 0U) continue;
-
-                uint8_t id_diff = (ctx.obj_ids[i] != ctx.selected_id) ? 1U : 0U;
-                uint8_t far_enough = 0U;
-                if (ctx.seek_has_ref != 0U) {
-                    float md = absf(objs->objects[i].centroid_x - ctx.seek_ref_cx) +
-                               absf(objs->objects[i].centroid_y - ctx.seek_ref_cy);
-                    if (md >= FSM_SEEK_MIN_MANHATTAN)
-                        far_enough = 1U;
-                }
-
-                if ((id_diff != 0U) || (far_enough != 0U)) {
-                    ctx.selected_id = ctx.obj_ids[i];
-                    ctx.state = FSM_STATE_TRACK;
-                    ctx.seek_has_ref = 0U;
-                    ctx.seek_enter_ms = 0U;
-                    ctx.seek_visible_since_ms = 0U;
-                    ctx.fallback_enter_ms = 0U;
-                    switched = 1U;
-                    break;
-                }
-            }
-
-            if (switched == 0U) {
-                /* stable-visible fallback */
-                if (ctx.seek_visible_since_ms == 0U)
-                    ctx.seek_visible_since_ms = now;
-
-                if ((now - ctx.seek_visible_since_ms) >= FSM_SEEK_ACCEPT_VISIBLE_MS) {
-                    for (uint8_t i = 0U; i < objs->count; i++) {
-                        if (objs->objects[i].valid != 0U) {
-                            ctx.selected_id = ctx.obj_ids[i];
-                            ctx.state = FSM_STATE_TRACK;
-                            ctx.seek_has_ref = 0U;
-                            ctx.seek_enter_ms = 0U;
-                            ctx.seek_visible_since_ms = 0U;
-                            ctx.fallback_enter_ms = 0U;
-                            switched = 1U;
-                            break;
-                        }
+            if ((now - ctx.seek_visible_since_ms) >= FSM_SEEK_ACCEPT_VISIBLE_MS) {
+                for (uint8_t i = 0U; i < objs->count; i++) {
+                    if (objs->objects[i].valid != 0U) {
+                        ctx.selected_id = ctx.obj_ids[i];
+                        ctx.state = FSM_STATE_TRACK;
+                        ctx.seek_has_ref = 0U;
+                        ctx.seek_enter_ms = 0U;
+                        ctx.seek_visible_since_ms = 0U;
+                        ctx.fallback_enter_ms = 0U;
+                        switched = 1U;
+                        break;
                     }
                 }
-
-                /* no-ref multi-object fallback */
-                if ((switched == 0U) && (ctx.seek_has_ref == 0U) && (objs->count > 1U)) {
-                    ctx.selected_id = pick_next_visible_id(objs, ctx.selected_id);
-                    ctx.state = FSM_STATE_TRACK;
-                    ctx.seek_has_ref = 0U;
-                    ctx.seek_enter_ms = 0U;
-                    ctx.seek_visible_since_ms = 0U;
-                    ctx.fallback_enter_ms = 0U;
-                    switched = 1U;
-                }
             }
-        } else {
-            ctx.seek_visible_since_ms = 0U;
-        }
 
-        /* resolve selected_idx for output */
-        if (switched != 0U) {
-            int8_t si = find_idx_by_id(objs, ctx.selected_id);
-            ctx.selected_idx = (si >= 0) ? (uint8_t)si : 0xFFU;
-        } else {
-            /* still seeking — decide what to show */
-            uint32_t seek_ms = now - ctx.seek_enter_ms;
-            if ((seek_ms < FSM_SEEK_PRE_SCAN_WAIT_MS) &&
-                (objs->count > 0U) && (objs->objects[0].valid != 0U)) {
-                /* grace window: keep tracking any visible object */
-                ctx.selected_idx = 0U;
-            } else {
-                /* after grace: force lost to trigger scan behavior */
-                ctx.selected_idx = 0xFFU;
+            /* no-ref multi-object fallback */
+            if ((switched == 0U) && (ctx.seek_has_ref == 0U) && (objs->count > 1U)) {
+                ctx.selected_id = pick_next_visible_id(objs, ctx.selected_id);
+                ctx.state = FSM_STATE_TRACK;
+                ctx.seek_has_ref = 0U;
+                ctx.seek_enter_ms = 0U;
+                ctx.seek_visible_since_ms = 0U;
+                ctx.fallback_enter_ms = 0U;
+                switched = 1U;
             }
         }
-        break;
+    } else {
+        ctx.seek_visible_since_ms = 0U;
     }
 
-    case FSM_STATE_FALLBACK: {
+    /* resolve selected_idx for output */
+    if (switched != 0U) {
         int8_t si = find_idx_by_id(objs, ctx.selected_id);
-        if (si >= 0) {
-            /* selected came back */
+        ctx.selected_idx = (si >= 0) ? (uint8_t)si : 0xFFU;
+    } else {
+        /* still seeking — decide what to show */
+        uint32_t seek_ms = now - ctx.seek_enter_ms;
+        if ((seek_ms < FSM_SEEK_PRE_SCAN_WAIT_MS) &&
+            (objs->count > 0U) && (objs->objects[0].valid != 0U)) {
+            /* grace window: keep tracking any visible object */
+            ctx.selected_idx = 0U;
+        } else {
+            /* after grace: force lost to trigger scan behavior */
+            ctx.selected_idx = 0xFFU;
+        }
+    }
+}
+
+static void update_fallback_state(const ThermalObjectsResult *objs, uint32_t now)
+{
+    int8_t si = find_idx_by_id(objs, ctx.selected_id);
+    if (si >= 0) {
+        /* selected came back */
+        ctx.state = FSM_STATE_TRACK;
+        ctx.selected_idx = (uint8_t)si;
+        ctx.fallback_enter_ms = 0U;
+    } else if (objs->count > 0U) {
+        if ((now - ctx.fallback_enter_ms) >= FSM_FALLBACK_LAG_MS) {
+            /* timeout — reassign to first valid */
+            ctx.selected_id = ctx.obj_ids[0];
+            ctx.selected_idx = 0U;
             ctx.state = FSM_STATE_TRACK;
-            ctx.selected_idx = (uint8_t)si;
             ctx.fallback_enter_ms = 0U;
-        } else if (objs->count > 0U) {
-            if ((now - ctx.fallback_enter_ms) >= FSM_FALLBACK_LAG_MS) {
-                /* timeout — reassign to first valid */
-                ctx.selected_id = ctx.obj_ids[0];
-                ctx.selected_idx = 0U;
-                ctx.state = FSM_STATE_TRACK;
-                ctx.fallback_enter_ms = 0U;
-            } else {
-                ctx.selected_idx = 0xFFU;
-            }
         } else {
             ctx.selected_idx = 0xFFU;
         }
-        break;
-    }
-
-    case FSM_STATE_MANUAL:
+    } else {
         ctx.selected_idx = 0xFFU;
-        break;
     }
+}
 
-    /* ---- produce outputs ---- */
+static void produce_output(const FSM_Input *in, const ThermalObjectsResult *objs, FSM_Output *out)
+{
     out->state       = ctx.state;
     out->selected_idx = ctx.selected_idx;
     out->manual_vx   = 0.0f;
@@ -389,4 +370,46 @@ void FSM_Update(const FSM_Input *in, FSM_Output *out)
         out->laser_on  = true;
         break;
     }
+}
+
+/* ---- public API ---- */
+
+void FSM_Init(void)
+{
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.state       = FSM_STATE_TRACK;
+    ctx.selected_id = OBJ_ID_NONE;
+    ctx.selected_idx = 0xFFU;
+}
+
+void FSM_Update(const FSM_Input *in, FSM_Output *out)
+{
+    const ThermalObjectsResult *objs = in->objs;
+    uint32_t now = in->now_ms;
+
+    /* ---- ID association (runs every frame) ---- */
+    associate_ids(objs, now);
+
+    /* ---- input processing (in priority order) ---- */
+    handle_manual_toggle(in, now);
+    handle_btn_next(in, objs, now);
+
+    /* ---- state machine update ---- */
+    switch (ctx.state) {
+    case FSM_STATE_TRACK:
+        update_track_state(objs, now);
+        break;
+    case FSM_STATE_SEEK:
+        update_seek_state(objs, now);
+        break;
+    case FSM_STATE_FALLBACK:
+        update_fallback_state(objs, now);
+        break;
+    case FSM_STATE_MANUAL:
+        ctx.selected_idx = 0xFFU;
+        break;
+    }
+
+    /* ---- produce outputs ---- */
+    produce_output(in, objs, out);
 }
