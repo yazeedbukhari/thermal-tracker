@@ -188,10 +188,10 @@ int main(void)
         FSM_Update(&fsm_in, &fsm_out);
 
         /* ---- Kalman filter: smooth & estimate velocity ---- */
-        apply_kalman_filter(&kalman_cx, &kalman_cy, &fsm_out, &filtered_det, now, &last_frame_ms);
+        //apply_kalman_filter(&kalman_cx, &kalman_cy, &fsm_out, &filtered_det, now, &last_frame_ms);
 
 #    if THERMAL_SERVO_TRACK_TEST
-        Tracking_UpdateFromDetection(&filtered_det);
+        Tracking_UpdateFromDetection(&fsm_out.det);
 #    endif
         Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
 #    if ST7735_CN8_SPI_LIVE_VIEW
