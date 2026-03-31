@@ -187,14 +187,17 @@ static void fill_detection(ThermalDetection *det, const ThermalObjectsResult *ob
 
 /* ---- state helpers ---- */
 
-static void handle_manual_toggle(const FSM_Input *in, uint32_t now)
+static void handle_manual_toggle(const FSM_Input *in)
 {
     if (!in->btn_released)
         return;
 
     if (ctx.state == FSM_STATE_MANUAL) {
-        ctx.state             = FSM_STATE_FALLBACK;
-        ctx.fallback_enter_ms = now;
+        ctx.state                 = FSM_STATE_TRACK;
+        ctx.fallback_enter_ms     = 0U;
+        ctx.seek_has_ref          = 0U;
+        ctx.seek_enter_ms         = 0U;
+        ctx.seek_visible_since_ms = 0U;
         state_manual          = 0;
     } else {
         ctx.state    = FSM_STATE_MANUAL;
@@ -408,7 +411,7 @@ void FSM_Update(const FSM_Input *in, FSM_Output *out)
     associate_ids(objs, now);
 
     /* ---- input processing (in priority order) ---- */
-    handle_manual_toggle(in, now);
+    handle_manual_toggle(in);
     handle_btn_next(in, objs, now);
 
     /* ---- state machine update ---- */

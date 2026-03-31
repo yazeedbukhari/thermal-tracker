@@ -18,6 +18,7 @@
 #include "tracking.h"
 #include "uart_stream.h"
 #include <stdio.h>
+#include <string.h>
 
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
 
@@ -31,6 +32,9 @@
 
 /* Keep in sync with laser.c lock behavior. */
 #define LASER_LOCK_TRACK_REQUIRED 1U
+
+/* Per-frame manual joystick step in servo degrees. */
+#define MANUAL_SERVO_STEP_DEG 2.0f
 
 /* Optional Kalman pass-through scaffold (kept disabled by default). */
 #define USE_KALMAN_FILTER 0U
@@ -67,6 +71,7 @@ static void apply_kalman_filter(KalmanAxis *kalman_cx, KalmanAxis *kalman_cy,
 #endif
 
 static volatile uint8_t g_next_object_request = 0U;
+static volatile uint8_t g_btn_released_request = 0U;
 static volatile uint32_t g_last_b1_ms = 0U;
 
 /* Defined here, referenced by FSM module. */
@@ -81,7 +86,8 @@ int main(void)
     MX_USART3_UART_Init();
     Laser_Init();
 
-#if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW || !AMG8833_BRINGUP_TEST
+#if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW || !AMG8833_BRINGUP_TEST || \
+    THERMAL_SERVO_TRACK_TEST
     MX_DMA_Init();
 #endif
 
@@ -101,6 +107,8 @@ int main(void)
 #if AMG8833_BRINGUP_TEST
     MX_I2C1_Init();
 #if THERMAL_SERVO_TRACK_TEST
+    MX_ADC1_Init();
+    Joystick_Init();
     MX_TIM3_Init();
     Servo_Init();
     Tracking_Init();
@@ -159,21 +167,38 @@ int main(void)
         (void)snprintf(addr_msg, sizeof(addr_msg), "READY addr=0x%02X\r\n", amg_addr);
         uart_send(addr_msg);
     }
+
+    memset(&objs, 0, sizeof(objs));
 #endif
 
     while (1) {
-        if (state_manual != 0) {
-            JoystickReading r = read_joystick_adc();
-            Servo_SetPan(Servo_GetPan() + r.vr_x);
-            Servo_SetTilt(Servo_GetTilt() + r.vr_y);
-            Laser_Update(0U);
-            HAL_Delay(1);
-            continue;
-        }
-
 #if AMG8833_BRINGUP_TEST
         uint32_t now = HAL_GetTick();
+        if ((state_manual != 0) || (g_next_object_request != 0U) || (g_btn_released_request != 0U)) {
+            fsm_in.objs = &objs;
+            fsm_in.now_ms = now;
+            fsm_in.btn_next     = (g_next_object_request != 0U);
+            fsm_in.btn_released = (g_btn_released_request != 0U);
+            fsm_in.joy = read_joystick_adc();
+            g_next_object_request  = 0U;
+            g_btn_released_request = 0U;
+
+            FSM_Update(&fsm_in, &fsm_out);
+
+#if THERMAL_SERVO_TRACK_TEST
+            if (fsm_out.state == FSM_STATE_MANUAL) {
+                Tracking_Enable(0U);
+                Servo_SetPan(Servo_GetPan() - (fsm_out.manual_vx * MANUAL_SERVO_STEP_DEG));
+                Servo_SetTilt(Servo_GetTilt() + (fsm_out.manual_vy * MANUAL_SERVO_STEP_DEG));
+                Laser_Update(0U);
+                HAL_Delay(5);
+                continue;
+            }
+#endif
+        }
+
         if ((int32_t)(now - next_frame_ms) < 0) {
+            HAL_Delay(1);
             continue;
         }
         next_frame_ms = now + AMG_FRAME_PERIOD_MS;
@@ -188,11 +213,11 @@ int main(void)
 
         fsm_in.objs = &objs;
         fsm_in.now_ms = now;
-        fsm_in.btn_next = (g_next_object_request != 0U);
-        fsm_in.btn_released = false;
-        fsm_in.joy.vr_x = 0.0f;
-        fsm_in.joy.vr_y = 0.0f;
-        g_next_object_request = 0U;
+        fsm_in.btn_next     = (g_next_object_request != 0U);
+        fsm_in.btn_released = (g_btn_released_request != 0U);
+        fsm_in.joy = read_joystick_adc();
+        g_next_object_request  = 0U;
+        g_btn_released_request = 0U;
 
         FSM_Update(&fsm_in, &fsm_out);
 
@@ -203,7 +228,14 @@ int main(void)
 #endif
 
 #if THERMAL_SERVO_TRACK_TEST
-        Tracking_UpdateFromDetection(&track_det);
+        if (fsm_out.state == FSM_STATE_MANUAL) {
+            Tracking_Enable(0U);
+            Servo_SetPan(Servo_GetPan() - (fsm_out.manual_vx * MANUAL_SERVO_STEP_DEG));
+            Servo_SetTilt(Servo_GetTilt() + (fsm_out.manual_vy * MANUAL_SERVO_STEP_DEG));
+        } else {
+            Tracking_Enable(1U);
+            Tracking_UpdateFromDetection(&track_det);
+        }
 #endif
 
         {
@@ -244,26 +276,20 @@ int main(void)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
+    uint32_t now = HAL_GetTick();
     if (GPIO_Pin == USER_Btn_Pin) {
-#if AMG8833_BRINGUP_TEST
-        uint32_t now = HAL_GetTick();
         if ((now - g_last_b1_ms) > 180U) {
             g_last_b1_ms = now;
             g_next_object_request = 1U;
         }
-#endif
         return;
     }
 
     if (GPIO_Pin == PIN_SW) {
-#if AMG8833_BRINGUP_TEST
-        uart_send("SW\r\n");
-#else
-        char msg[40];
-        int pan = (int)Servo_GetPan();
-        int tilt = (int)Servo_GetTilt();
-        int len = sprintf(msg, "pan: %d, tilt: %d\r\n", pan, tilt);
-        HAL_UART_Transmit(&huart3, (uint8_t *)msg, len, 100);
-#endif
+        static uint32_t last_sw_ms = 0U;
+        if ((now - last_sw_ms) > 180U) {
+            last_sw_ms = now;
+            g_btn_released_request = 1U;
+        }
     }
 }
