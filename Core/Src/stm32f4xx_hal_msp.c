@@ -21,6 +21,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 /* USER CODE BEGIN Includes */
+#include "config.h"
 
 /* USER CODE END Includes */
 
@@ -248,6 +249,37 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef *hpcd)
 }
 
 /* USER CODE BEGIN 1 */
+
+void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    if (hspi->Instance == SPI3) {
+        __HAL_RCC_SPI3_CLK_ENABLE();
+        __HAL_RCC_GPIOB_CLK_ENABLE();
+
+        /* SPI3 GPIO Configuration
+           PB3  ------> SPI3_SCK
+           PB5  ------> SPI3_MOSI
+         */
+        GPIO_InitStruct.Pin       = GPIO_PIN_3 | GPIO_PIN_5;
+        GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull      = GPIO_NOPULL;
+        GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
+        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+        __HAL_LINKDMA(hspi, hdmatx, hdma_spi3_tx);
+    }
+}
+
+void HAL_SPI_MspDeInit(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI3) {
+        __HAL_RCC_SPI3_CLK_DISABLE();
+        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_3 | GPIO_PIN_5);
+    }
+}
 
 void HAL_ADC_MspInit(ADC_HandleTypeDef *hadc)
 {

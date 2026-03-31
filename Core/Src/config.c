@@ -16,8 +16,10 @@ I2C_HandleTypeDef hi2c1;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 ADC_HandleTypeDef hadc1;
+SPI_HandleTypeDef hspi3_tft;
 
 DMA_HandleTypeDef hdma2_joystick;
+DMA_HandleTypeDef hdma_spi3_tx;
 TIM_HandleTypeDef htim3_servos;
 
 void SystemClock_Config(void)
@@ -92,6 +94,27 @@ void MX_I2C1_Init(void)
 	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
 
 	if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+	{
+		Error_Handler();
+	}
+}
+
+void MX_SPI3_Init(void)
+{
+	hspi3_tft.Instance = SPI3;
+	hspi3_tft.Init.Mode = SPI_MODE_MASTER;
+	hspi3_tft.Init.Direction = SPI_DIRECTION_2LINES;
+	hspi3_tft.Init.DataSize = SPI_DATASIZE_8BIT;
+	hspi3_tft.Init.CLKPolarity = SPI_POLARITY_LOW;
+	hspi3_tft.Init.CLKPhase = SPI_PHASE_1EDGE;
+	hspi3_tft.Init.NSS = SPI_NSS_SOFT;
+	hspi3_tft.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+	hspi3_tft.Init.FirstBit = SPI_FIRSTBIT_MSB;
+	hspi3_tft.Init.TIMode = SPI_TIMODE_DISABLE;
+	hspi3_tft.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+	hspi3_tft.Init.CRCPolynomial = 7;
+
+	if (HAL_SPI_Init(&hspi3_tft) != HAL_OK)
 	{
 		Error_Handler();
 	}
@@ -182,6 +205,7 @@ void MX_GPIO_Init(void)
 
 void MX_DMA_Init(void)
 {
+	__HAL_RCC_DMA1_CLK_ENABLE();
 	__HAL_RCC_DMA2_CLK_ENABLE();
 
 	hdma2_joystick.Instance = DMA2_Stream0;
@@ -201,6 +225,27 @@ void MX_DMA_Init(void)
 	}
 
 	__HAL_LINKDMA(&hadc1, DMA_Handle, hdma2_joystick);
+
+	hdma_spi3_tx.Instance = DMA1_Stream5;
+	hdma_spi3_tx.Init.Channel = DMA_CHANNEL_0;
+	hdma_spi3_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+	hdma_spi3_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+	hdma_spi3_tx.Init.MemInc = DMA_MINC_ENABLE;
+	hdma_spi3_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+	hdma_spi3_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+	hdma_spi3_tx.Init.Mode = DMA_NORMAL;
+	hdma_spi3_tx.Init.Priority = DMA_PRIORITY_HIGH;
+	hdma_spi3_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+
+	if (HAL_DMA_Init(&hdma_spi3_tx) != HAL_OK)
+	{
+		Error_Handler();
+	}
+
+	__HAL_LINKDMA(&hspi3_tft, hdmatx, hdma_spi3_tx);
+
+	HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 }
 
 void MX_ADC1_Init(void)

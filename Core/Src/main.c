@@ -81,7 +81,12 @@ int main(void)
     MX_USART3_UART_Init();
     Laser_Init();
 
+#if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW || !AMG8833_BRINGUP_TEST
+    MX_DMA_Init();
+#endif
+
 #if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW
+    MX_SPI3_Init();
     ST7735_CN8_Test_Init();
 #endif
 
@@ -103,7 +108,6 @@ int main(void)
 #endif
 #else
     MX_USB_OTG_FS_PCD_Init();
-    MX_DMA_Init();
     MX_ADC1_Init();
     MX_TIM3_Init();
     Joystick_Init();
@@ -120,7 +124,6 @@ int main(void)
     ThermalDetection track_det;
 
     uint32_t next_frame_ms = HAL_GetTick();
-    uint8_t tft_render_toggle = 0U;
 #if STREAM_MULTI_OBJECT_BINARY
     uint32_t next_up_tx_ms = HAL_GetTick();
     uint16_t up_seq = 0U;
@@ -220,10 +223,7 @@ int main(void)
         Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
 
 #if ST7735_CN8_SPI_LIVE_VIEW
-        tft_render_toggle ^= 1U;
-        if (tft_render_toggle != 0U) {
-            ST7735_CN8_RenderFrame32x32(upscaled, &objs, fsm_out.selected_idx);
-        }
+        ST7735_CN8_RenderFrame32x32(upscaled, &objs, fsm_out.selected_idx);
 #endif
 
 #if STREAM_MULTI_OBJECT_BINARY
