@@ -23,8 +23,8 @@ typedef struct {
     float Kd;
 
     /* State */
-    float integral;       /* Accumulated integral term                     */
-    float prev_error;     /* Error from the previous call (for D term)     */
+    float integral;   /* Accumulated integral term                     */
+    float prev_error; /* Error from the previous call (for D term)     */
 
     /* Anti-windup: integral is clamped to [-integral_limit, +integral_limit] */
     float integral_limit;
@@ -48,11 +48,8 @@ typedef struct {
  * @output_limit    Maximum magnitude of the returned angle delta (degrees).
  * @dead_band       Error magnitude below which output is forced to zero (pixels).
  */
-void PID_Init(PID_Instance *pid,
-              float kp, float ki, float kd,
-              float integral_limit,
-              float output_limit,
-              float dead_band);
+void PID_Init(PID_Instance *pid, float kp, float ki, float kd, float integral_limit,
+              float output_limit, float dead_band);
 
 /*
  * PID_Update — run one control cycle and return the servo angle delta.
@@ -68,11 +65,7 @@ void PID_Init(PID_Instance *pid,
  * Returns the angle delta to add to the current servo position (degrees).
  * Positive delta moves the servo in the direction that reduces a positive error.
  */
-float PID_Update(PID_Instance *pid,
-                 float error,
-                 float dt,
-                 float velocity_est,
-                 uint8_t use_ext_vel);
+float PID_Update(PID_Instance *pid, float error, float dt, float velocity_est, uint8_t use_ext_vel);
 
 /*
  * PID_Reset — zero the integral and derivative state without changing gains.

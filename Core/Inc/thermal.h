@@ -57,11 +57,6 @@ void Thermal_DetectObjects8x8(const float frame_c[64], ThermalObjectsResult *out
 void Thermal_AnalyzeFrame8x8(const float frame_c[64], ThermalDetection *out);
 
 /* Bilinear upscale from 8x8 frame to arbitrary output resolution. */
-void Thermal_UpscaleBilinear8x8(
-    const float in8x8[64],
-    float *out,
-    uint16_t out_w,
-    uint16_t out_h
-);
+void Thermal_UpscaleBilinear8x8(const float in8x8[64], float *out, uint16_t out_w, uint16_t out_h);
 
 #endif /* INC_THERMAL_H_ */

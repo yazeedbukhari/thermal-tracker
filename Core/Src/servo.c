@@ -9,14 +9,14 @@
 
 // pan uses Pin PA6 (TIM3_CH1)
 // tilt uses Pin PA7 (TIM3_CH2)
- 
+
 // pan max left is 180, pan max right is 0 ()
 // tilt max up is 0, tilt max down is 180 (clockwise looking at gear goes down)
 
 #include "servo.h"
 #include "config.h"
 
-#define TILT_MIN_ANGLE_DEG 30.0f
+#define SERVO_LASER_ANGLE_LIMIT 150
 
 static float current_pan  = INIT_ANGLE;
 static float current_tilt = INIT_ANGLE;
@@ -25,8 +25,10 @@ static float current_tilt = INIT_ANGLE;
  * 0° = 500 us, 90° = 1500 us, 180° = 2500 us. */
 static float clamp_angle(float angle)
 {
-    if (angle < MIN_ANGLE) angle = MIN_ANGLE;
-    if (angle > MAX_ANGLE) angle = MAX_ANGLE;
+    if (angle < MIN_ANGLE)
+        angle = MIN_ANGLE;
+    if (angle > MAX_ANGLE)
+        angle = MAX_ANGLE;
     return angle;
 }
 
@@ -52,18 +54,18 @@ void Servo_SetPan(float angle)
 
 void Servo_SetTilt(float angle)
 {
-    if (angle < TILT_MIN_ANGLE_DEG) {
-        angle = TILT_MIN_ANGLE_DEG;
+    if (angle > SERVO_LASER_ANGLE_LIMIT) {
+        angle = SERVO_LASER_ANGLE_LIMIT;
     }
     current_tilt = clamp_angle(angle);
     __HAL_TIM_SET_COMPARE(&htim3_servos, TIM_CHANNEL_2, angle_to_ccr(current_tilt));
 }
 
-float Servo_GetPan(void)  
-{ 
+float Servo_GetPan(void)
+{
     return current_pan;
 }
-float Servo_GetTilt(void) 
-{ 
-    return current_tilt; 
+float Servo_GetTilt(void)
+{
+    return current_tilt;
 }
