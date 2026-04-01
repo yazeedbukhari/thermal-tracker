@@ -20,6 +20,7 @@ void print_uart(char *msg)
 
 void uart_send(const char *msg)
 {
+    return;
     HAL_UART_Transmit(&huart3, (uint8_t *)msg, (uint16_t)strlen(msg), 100);
 }
 
