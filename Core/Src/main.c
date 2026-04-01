@@ -26,7 +26,7 @@
 
 #define AMG8833_BRINGUP_TEST       1U
 #define AMG_FRAME_PERIOD_MS        50U  /* 20 FPS */
-#define STREAM_MULTI_OBJECT_BINARY 1U
+#define STREAM_MULTI_OBJECT_BINARY 0U
 #define UPSCALED_STREAM_PERIOD_MS  50U  /* send each sensor frame (~20 FPS) */
 #define THERMAL_SERVO_TRACK_TEST   1U
 #define ST7735_CN8_SPI_BOX_TEST    0U
