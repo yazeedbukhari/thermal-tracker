@@ -47,9 +47,13 @@
 #define MANUAL_PERIOD_SLOW_MS    60U
 #define MANUAL_PERIOD_MEDIUM_MS  25U
 #define MANUAL_PERIOD_FAST_MS    1U
+#define MANUAL_PAN_MIN_DEG       30.0f
+#define MANUAL_PAN_MAX_DEG       160.0f
+#define MANUAL_TILT_MIN_DEG      30.0f
+#define MANUAL_TILT_MAX_DEG      130.0f
 
 /* Optional Kalman pass-through scaffold (kept disabled by default). */
-#define USE_KALMAN_FILTER 0U
+#define USE_KALMAN_FILTER 1U
 
 #if USE_KALMAN_FILTER
 #include "kalman.h"
@@ -258,9 +262,27 @@ int main(void)
                 float joy_abs = dominant_axis_abs(&joy);
                 uint32_t period_ms = manual_period_ms(joy_abs);
                 if ((int32_t)(now - next_manual_step_ms) >= 0) {
+                    float next_pan;
+                    float next_tilt;
                     next_manual_step_ms = now + period_ms;
-                    Servo_SetPan(Servo_GetPan() + quantized_step(joy.vr_x));
-                    Servo_SetTilt(Servo_GetTilt() + quantized_step(joy.vr_y));
+
+                    next_pan = Servo_GetPan() + quantized_step(joy.vr_x);
+                    next_tilt = Servo_GetTilt() + quantized_step(joy.vr_y);
+                    if (next_pan < MANUAL_PAN_MIN_DEG) {
+                        next_pan = MANUAL_PAN_MIN_DEG;
+                    }
+                    if (next_pan > MANUAL_PAN_MAX_DEG) {
+                        next_pan = MANUAL_PAN_MAX_DEG;
+                    }
+                    if (next_tilt < MANUAL_TILT_MIN_DEG) {
+                        next_tilt = MANUAL_TILT_MIN_DEG;
+                    }
+                    if (next_tilt > MANUAL_TILT_MAX_DEG) {
+                        next_tilt = MANUAL_TILT_MAX_DEG;
+                    }
+
+                    Servo_SetPan(next_pan);
+                    Servo_SetTilt(next_tilt);
                 }
                 Laser_Update(0U);
             }

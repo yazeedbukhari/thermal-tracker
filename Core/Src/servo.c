@@ -16,8 +16,6 @@
 #include "servo.h"
 #include "config.h"
 
-#define SERVO_LASER_ANGLE_LIMIT 150
-
 static float current_pan  = INIT_ANGLE;
 static float current_tilt = INIT_ANGLE;
 
@@ -54,9 +52,6 @@ void Servo_SetPan(float angle)
 
 void Servo_SetTilt(float angle)
 {
-    if (angle > SERVO_LASER_ANGLE_LIMIT) {
-        angle = SERVO_LASER_ANGLE_LIMIT;
-    }
     current_tilt = clamp_angle(angle);
     __HAL_TIM_SET_COMPARE(&htim3_servos, TIM_CHANNEL_2, angle_to_ccr(current_tilt));
 }
