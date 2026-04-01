@@ -18,8 +18,8 @@
 #include "thermal.h"
 #include <stdint.h>
 
-#define UPSCALE_W        64U
-#define UPSCALE_H        64U
+#define UPSCALE_W        32U
+#define UPSCALE_H        32U
 #define Q_TEMP_MIN_C     18.0f
 #define Q_TEMP_MAX_C     35.0f
 #define STREAM_OBJ_COUNT THERMAL_MAX_OBJECTS

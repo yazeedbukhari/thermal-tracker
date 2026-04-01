@@ -23,8 +23,9 @@
 #define FSM_OBJ_TRACK_STALE_MS     1500U /* drop track after this silence    */
 #define FSM_SEEK_MIN_MANHATTAN     1.4f  /* min dist to accept "other" obj   */
 #define FSM_SEEK_PRE_SCAN_WAIT_MS  2200U /* grace before forcing lost-target */
-#define FSM_SEEK_ACCEPT_VISIBLE_MS 50U  /* lock visible obj after this      */
-#define FSM_FALLBACK_LAG_MS        1200U /* wait before reassigning to [0]   */
+#define FSM_SEEK_ACCEPT_VISIBLE_MS 50U   /* lock visible obj after this      */
+#define FSM_SELECTED_MISS_DEBOUNCE_MS 220U /* wait before declaring selected lost */
+#define FSM_FALLBACK_LAG_MS        250U  /* wait before reassigning to [0]   */
 
 extern int state_manual;
 

@@ -18,8 +18,11 @@
 #include "tracking.h"
 #include "uart_stream.h"
 #include <stdio.h>
+#include <string.h>
 
 #define PIN_SW GPIO_PIN_3 // Pin PC_3 (A2)
+#define MODE_LED_GPIO_Port GPIOD
+#define MODE_LED_Pin       GPIO_PIN_13
 
 #define AMG8833_BRINGUP_TEST       1U
 #define AMG_FRAME_PERIOD_MS        50U  /* 20 FPS */
@@ -32,6 +35,18 @@
 
 /* Keep in sync with laser.c lock behavior. */
 #define LASER_LOCK_TRACK_REQUIRED 1U
+
+/* Manual joystick control profile:
+ * convert analog [-1..1] into 3 discrete movement modes to reduce jitter/work. */
+#define MANUAL_JOY_DEADZONE      0.10f
+#define MANUAL_JOY_SLOW_EDGE     0.18f
+#define MANUAL_JOY_MED_EDGE      0.30f
+#define MANUAL_STEP_SLOW_DEG     0.9f
+#define MANUAL_STEP_MEDIUM_DEG   2.0f
+#define MANUAL_STEP_FAST_DEG     9.0f
+#define MANUAL_PERIOD_SLOW_MS    60U
+#define MANUAL_PERIOD_MEDIUM_MS  25U
+#define MANUAL_PERIOD_FAST_MS    1U
 
 /* Optional Kalman pass-through scaffold (kept disabled by default). */
 #define USE_KALMAN_FILTER 0U
@@ -68,10 +83,60 @@ static void apply_kalman_filter(KalmanAxis *kalman_cx, KalmanAxis *kalman_cy,
 #endif
 
 static volatile uint8_t g_next_object_request = 0U;
+static volatile uint8_t g_btn_released_request = 0U;
 static volatile uint32_t g_last_b1_ms = 0U;
+static volatile uint32_t g_last_sw_ms = 0U;
 
 /* Defined here, referenced by FSM module. */
 int state_manual = 0;
+
+static void update_mode_led(void)
+{
+    HAL_GPIO_WritePin(MODE_LED_GPIO_Port, MODE_LED_Pin,
+                      (state_manual != 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static float absf_local(float v)
+{
+    return (v < 0.0f) ? -v : v;
+}
+
+static float dominant_axis_abs(const JoystickReading *r)
+{
+    float ax = absf_local(r->vr_x);
+    float ay = absf_local(r->vr_y);
+    return (ax > ay) ? ax : ay;
+}
+
+static uint32_t manual_period_ms(float joy_abs)
+{
+    if (joy_abs < MANUAL_JOY_DEADZONE) {
+        return MANUAL_PERIOD_SLOW_MS;
+    }
+    if (joy_abs < MANUAL_JOY_SLOW_EDGE) {
+        return MANUAL_PERIOD_SLOW_MS;
+    }
+    if (joy_abs < MANUAL_JOY_MED_EDGE) {
+        return MANUAL_PERIOD_MEDIUM_MS;
+    }
+    return MANUAL_PERIOD_FAST_MS;
+}
+
+static float quantized_step(float axis)
+{
+    float a = absf_local(axis);
+    if (a < MANUAL_JOY_DEADZONE) {
+        return 0.0f;
+    }
+
+    float step = MANUAL_STEP_FAST_DEG;
+    if (a < MANUAL_JOY_SLOW_EDGE) {
+        step = MANUAL_STEP_SLOW_DEG;
+    } else if (a < MANUAL_JOY_MED_EDGE) {
+        step = MANUAL_STEP_MEDIUM_DEG;
+    }
+    return (axis < 0.0f) ? -step : step;
+}
 
 int main(void)
 {
@@ -102,6 +167,8 @@ int main(void)
 #if AMG8833_BRINGUP_TEST
     MX_I2C1_Init();
 #if THERMAL_SERVO_TRACK_TEST
+    MX_ADC1_Init();
+    Joystick_Init();
     MX_TIM3_Init();
     Servo_Init();
     Tracking_Init();
@@ -125,6 +192,8 @@ int main(void)
     ThermalDetection track_det;
 
     uint32_t next_frame_ms = HAL_GetTick();
+    uint32_t next_manual_step_ms = next_frame_ms;
+    uint8_t was_manual_mode = 0U;
 #if STREAM_MULTI_OBJECT_BINARY
     uint32_t next_up_tx_ms = HAL_GetTick();
     uint16_t up_seq = 0U;
@@ -160,21 +229,46 @@ int main(void)
         (void)snprintf(addr_msg, sizeof(addr_msg), "READY addr=0x%02X\r\n", amg_addr);
         uart_send(addr_msg);
     }
+
+    memset(&objs, 0, sizeof(objs));
 #endif
 
     while (1) {
-        if (state_manual != 0) {
-            JoystickReading r = read_joystick_adc();
-            Servo_SetPan(Servo_GetPan() + r.vr_x);
-            Servo_SetTilt(Servo_GetTilt() + r.vr_y);
-            Laser_Update(0U);
-            HAL_Delay(1);
-            continue;
-        }
-
 #if AMG8833_BRINGUP_TEST
         uint32_t now = HAL_GetTick();
+        update_mode_led();
+
+        if ((state_manual != 0) || (g_next_object_request != 0U) || (g_btn_released_request != 0U)) {
+            JoystickReading joy = read_joystick_adc();
+
+            fsm_in.objs = &objs;
+            fsm_in.now_ms = now;
+            fsm_in.btn_next = (g_next_object_request != 0U);
+            fsm_in.btn_released = (g_btn_released_request != 0U);
+            fsm_in.joy = joy;
+            g_next_object_request = 0U;
+            g_btn_released_request = 0U;
+
+            FSM_Update(&fsm_in, &fsm_out);
+
+#if THERMAL_SERVO_TRACK_TEST
+            if (fsm_out.state == FSM_STATE_MANUAL) {
+                Tracking_Enable(0U);
+
+                float joy_abs = dominant_axis_abs(&joy);
+                uint32_t period_ms = manual_period_ms(joy_abs);
+                if ((int32_t)(now - next_manual_step_ms) >= 0) {
+                    next_manual_step_ms = now + period_ms;
+                    Servo_SetPan(Servo_GetPan() + quantized_step(joy.vr_x));
+                    Servo_SetTilt(Servo_GetTilt() + quantized_step(joy.vr_y));
+                }
+                Laser_Update(0U);
+            }
+#endif
+        }
+
         if ((int32_t)(now - next_frame_ms) < 0) {
+            HAL_Delay(1);
             continue;
         }
         next_frame_ms = now + AMG_FRAME_PERIOD_MS;
@@ -190,12 +284,22 @@ int main(void)
         fsm_in.objs = &objs;
         fsm_in.now_ms = now;
         fsm_in.btn_next = (g_next_object_request != 0U);
-        fsm_in.btn_released = false;
-        fsm_in.joy.vr_x = 0.0f;
-        fsm_in.joy.vr_y = 0.0f;
+        fsm_in.btn_released = (g_btn_released_request != 0U);
+        fsm_in.joy = read_joystick_adc();
         g_next_object_request = 0U;
+        g_btn_released_request = 0U;
 
         FSM_Update(&fsm_in, &fsm_out);
+
+#if THERMAL_SERVO_TRACK_TEST
+        {
+            uint8_t is_manual_mode = (fsm_out.state == FSM_STATE_MANUAL) ? 1U : 0U;
+            if ((was_manual_mode != 0U) && (is_manual_mode == 0U)) {
+                Tracking_ResetSearchTimer();
+            }
+            was_manual_mode = is_manual_mode;
+        }
+#endif
 
 #if USE_KALMAN_FILTER
         apply_kalman_filter(&kalman_cx, &kalman_cy, &fsm_out, &track_det, now, &last_frame_ms);
@@ -204,7 +308,12 @@ int main(void)
 #endif
 
 #if THERMAL_SERVO_TRACK_TEST
-        Tracking_UpdateFromDetection(&track_det);
+        if (fsm_out.state == FSM_STATE_MANUAL) {
+            Tracking_Enable(0U);
+        } else {
+            Tracking_Enable(1U);
+            Tracking_UpdateFromDetection(&track_det);
+        }
 #endif
 
         {
@@ -249,9 +358,9 @@ int main(void)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
+    uint32_t now = HAL_GetTick();
     if (GPIO_Pin == USER_Btn_Pin) {
 #if AMG8833_BRINGUP_TEST
-        uint32_t now = HAL_GetTick();
         if ((now - g_last_b1_ms) > 180U) {
             g_last_b1_ms = now;
             g_next_object_request = 1U;
@@ -261,14 +370,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 
     if (GPIO_Pin == PIN_SW) {
-#if AMG8833_BRINGUP_TEST
-        uart_send("SW\r\n");
-#else
-        char msg[40];
-        int pan = (int)Servo_GetPan();
-        int tilt = (int)Servo_GetTilt();
-        int len = sprintf(msg, "pan: %d, tilt: %d\r\n", pan, tilt);
-        HAL_UART_Transmit(&huart3, (uint8_t *)msg, len, 100);
-#endif
+        if ((now - g_last_sw_ms) > 180U) {
+            g_last_sw_ms = now;
+            g_btn_released_request = 1U;
+        }
     }
 }

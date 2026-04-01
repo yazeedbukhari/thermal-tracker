@@ -24,7 +24,7 @@
  * 1) Coast briefly in last known direction to recover target.
  * 2) If still lost for >5s, enter scan mode (pan sweep + tilt stepping). */
 #define TRACK_COAST_MS            1000U
-#define TRACK_SCAN_START_MS       3400U
+#define TRACK_SCAN_START_MS       2200U
 #define TRACK_SCAN_PAN_DEG_PER_S  45.0f
 #define TRACK_SCAN_TILT_DEG_PER_S 18.0f
 #define TRACK_SCAN_PAN_MIN        12.0f
@@ -88,6 +88,17 @@ void Tracking_Init(void)
 void Tracking_Enable(uint8_t enable)
 {
     tracking_enabled = (enable != 0U) ? 1U : 0U;
+}
+
+void Tracking_ResetSearchTimer(void)
+{
+    uint32_t now = HAL_GetTick();
+    lost_since_ms = now;
+    last_update_ms = now;
+    has_prev_centroid = 0U;
+    has_prev_cmd = 0U;
+    prev_pan_cmd = 0.0f;
+    prev_tilt_cmd = 0.0f;
 }
 
 void Tracking_UpdateFromDetection(const ThermalDetection *det)

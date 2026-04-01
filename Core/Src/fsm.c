@@ -32,6 +32,7 @@ typedef struct {
     /* selection */
     uint8_t selected_id;  /* persistent track ID           */
     uint8_t selected_idx; /* index into current objs[]     */
+    uint32_t selected_miss_since_ms;
 
     /* seek state */
     uint8_t seek_has_ref;
@@ -187,14 +188,17 @@ static void fill_detection(ThermalDetection *det, const ThermalObjectsResult *ob
 
 /* ---- state helpers ---- */
 
-static void handle_manual_toggle(const FSM_Input *in, uint32_t now)
+static void handle_manual_toggle(const FSM_Input *in)
 {
     if (!in->btn_released)
         return;
 
     if (ctx.state == FSM_STATE_MANUAL) {
-        ctx.state             = FSM_STATE_FALLBACK;
-        ctx.fallback_enter_ms = now;
+        ctx.state                 = FSM_STATE_TRACK;
+        ctx.fallback_enter_ms     = 0U;
+        ctx.seek_has_ref          = 0U;
+        ctx.seek_enter_ms         = 0U;
+        ctx.seek_visible_since_ms = 0U;
         state_manual          = 0;
     } else {
         ctx.state    = FSM_STATE_MANUAL;
@@ -244,13 +248,26 @@ static void update_track_state(const ThermalObjectsResult *objs, uint32_t now)
     int8_t si = find_idx_by_id(objs, ctx.selected_id);
     if (si >= 0) {
         ctx.selected_idx = (uint8_t)si;
+        ctx.selected_miss_since_ms = 0U;
     } else if (objs->count > 0U) {
-        /* selected ID not visible — enter fallback */
-        ctx.state             = FSM_STATE_FALLBACK;
-        ctx.fallback_enter_ms = now;
-        ctx.selected_idx      = 0xFFU;
+        /* Selected ID not visible: debounce brief association misses to
+         * avoid ping-pong between two nearby objects. */
+        if (ctx.selected_miss_since_ms == 0U) {
+            ctx.selected_miss_since_ms = now;
+            ctx.selected_idx = 0xFFU;
+            return;
+        }
+        if ((now - ctx.selected_miss_since_ms) >= FSM_SELECTED_MISS_DEBOUNCE_MS) {
+            ctx.state             = FSM_STATE_FALLBACK;
+            ctx.fallback_enter_ms = now;
+            ctx.selected_idx      = 0xFFU;
+            ctx.selected_miss_since_ms = 0U;
+        } else {
+            ctx.selected_idx = 0xFFU;
+        }
     } else {
         ctx.selected_idx = 0xFFU;
+        ctx.selected_miss_since_ms = 0U;
     }
 }
 
@@ -397,6 +414,7 @@ void FSM_Init(void)
     ctx.state        = FSM_STATE_TRACK;
     ctx.selected_id  = OBJ_ID_NONE;
     ctx.selected_idx = 0xFFU;
+    ctx.selected_miss_since_ms = 0U;
 }
 
 void FSM_Update(const FSM_Input *in, FSM_Output *out)
@@ -408,7 +426,7 @@ void FSM_Update(const FSM_Input *in, FSM_Output *out)
     associate_ids(objs, now);
 
     /* ---- input processing (in priority order) ---- */
-    handle_manual_toggle(in, now);
+    handle_manual_toggle(in);
     handle_btn_next(in, objs, now);
 
     /* ---- state machine update ---- */
