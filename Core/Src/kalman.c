@@ -1,6 +1,5 @@
 #include "kalman.h"
 
-/* ── Public API ──────────────────────────────────────────────────────────── */
 
 void Kalman_Init(KalmanAxis *kf, float q_pos, float q_vel, float r)
 {

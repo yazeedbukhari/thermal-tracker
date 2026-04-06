@@ -100,7 +100,6 @@ static void associate_ids(const ThermalObjectsResult *objs, uint32_t now_ms)
         ctx.tracks[id].last_seen_ms = now_ms;
     }
 
-    /* expire stale tracks */
     for (uint8_t t = 0U; t < THERMAL_MAX_OBJECTS; t++) {
         if ((ctx.tracks[t].active != 0U) &&
             ((now_ms - ctx.tracks[t].last_seen_ms) > FSM_OBJ_TRACK_STALE_MS))
