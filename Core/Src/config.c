@@ -1,3 +1,4 @@
+/* Peripheral clock and hardware initialization routines. */
 #include "config.h"
 #include "main.h"
 
@@ -18,15 +19,12 @@ void SystemClock_Config(void)
 	RCC_OscInitTypeDef RCC_OscInitStruct = {0};
 	RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-	/** Configure the main internal regulator output voltage
-	*/
-	__HAL_RCC_PWR_CLK_ENABLE();
+	
+  	__HAL_RCC_PWR_CLK_ENABLE();
 	__HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-	/** Initializes the RCC Oscillators according to the specified parameters
-	* in the RCC_OscInitTypeDef structure.
-	*/
-	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+	
+  	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
 	RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
 	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
 	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
@@ -40,9 +38,8 @@ void SystemClock_Config(void)
 		Error_Handler();
 	}
 
-	/** Initializes the CPU, AHB and APB buses clocks
-	*/
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+	
+  	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
 							  |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
 	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
 	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
@@ -251,9 +248,8 @@ void MX_ADC1_Init(void)
 {
 	ADC_ChannelConfTypeDef sConfig = {0};
 
-	/** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-	*/
-	hadc1.Instance = ADC1;
+	
+  	hadc1.Instance = ADC1;
 	hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
 	hadc1.Init.Resolution = ADC_RESOLUTION_12B;
 	hadc1.Init.ScanConvMode = ENABLE;
@@ -271,8 +267,8 @@ void MX_ADC1_Init(void)
 		Error_Handler();
 	}
 
-	/** Configure VRx on PA_3 (ADC1_IN3) */
-	sConfig.Channel = ADC_CHANNEL_3;  // PA_3 (A0) is channel 3
+	
+  	sConfig.Channel = ADC_CHANNEL_3;  // PA_3 (A0) is channel 3
 	sConfig.Rank = 1;
 	sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
 
@@ -281,9 +277,8 @@ void MX_ADC1_Init(void)
 		Error_Handler();
 	}
 
-	/** Configure VRy on PC_0 (ADC1_IN10)
-	*/
-	sConfig.Channel = ADC_CHANNEL_10;  // PC_0 (A1) is channel 10
+	
+  	sConfig.Channel = ADC_CHANNEL_10;  // PC_0 (A1) is channel 10
 	sConfig.Rank = 2;
 	sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
 
@@ -344,16 +339,14 @@ void Error_Handler(void)
 }
 
 #ifdef USE_FULL_ASSERT
-/**
-	* @brief  Reports the name of the source file and the source line number
-	*         where the assert_param error has occurred.
-	* @param  file: pointer to the source file name
-	* @param  line: assert_param error line source number
-	* @retval None
-	*/
-void assert_failed(uint8_t *file, uint32_t line)
+
+  void assert_failed(uint8_t *file, uint32_t line)
 {
 	/* User can add his own implementation to report the file name and line number,
      ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
 }
 #endif /* USE_FULL_ASSERT */
+
+
+
+

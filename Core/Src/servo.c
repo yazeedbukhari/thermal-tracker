@@ -1,3 +1,4 @@
+/* Servo PWM mapping and pan/tilt angle set/get functions. */
 // pan uses Pin PA6 (TIM3_CH1)
 // tilt uses Pin PA7 (TIM3_CH2)
 
@@ -55,3 +56,7 @@ float Servo_GetTilt(void)
 {
     return current_tilt;
 }
+
+
+
+

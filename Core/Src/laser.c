@@ -1,3 +1,4 @@
+/* Laser control logic with button + lock-delay safety behavior. */
 #include "laser.h"
 
 // External trigger button (active-low with pull-up)
@@ -57,3 +58,7 @@ void Laser_Update(uint8_t target_locked)
     laser_set(0U);
   }
 }
+
+
+
+

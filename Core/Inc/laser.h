@@ -1,3 +1,4 @@
+/* Declarations for laser gating and lock-timed activation.  */
 #ifndef INC_LASER_H_
 #define INC_LASER_H_
 
@@ -7,3 +8,6 @@ void Laser_Init(void);
 void Laser_Update(uint8_t target_locked);
 
 #endif /* INC_LASER_H_ */
+
+
+

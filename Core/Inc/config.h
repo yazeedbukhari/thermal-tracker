@@ -1,10 +1,4 @@
-/*
- * config.h — Peripheral handle externs and MX_*_Init prototypes
- *
- * Central declaration point for all HAL peripheral handles (UART, ADC, USB,
- * I2C, TIM, DMA) and their CubeMX-generated init functions. Every module
- * that touches hardware includes this header to access the shared handles.
- */
+/* Shared peripheral handle declarations and init function prototypes. */
 
 #ifndef INC_CONFIG_H_
 #define INC_CONFIG_H_
@@ -33,3 +27,7 @@ void MX_ADC1_Init(void);
 void MX_TIM3_Init(void);
 
 #endif /* INC_CONFIG_H_ */
+
+
+
+

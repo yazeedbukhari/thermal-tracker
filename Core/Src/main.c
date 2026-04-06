@@ -1,3 +1,4 @@
+/* Main app loop coordinating sensor read, processing, control, and outputs. */
 #include "main.h"
 #include "amg8833.h"
 #include "config.h"
@@ -5,7 +6,7 @@
 #include "joystick.h"
 #include "laser.h"
 #include "servo.h"
-#include "st7735_cn8_spi_test.h"
+#include "display_st7735.h"
 #include "thermal.h"
 #include "tracking.h"
 #include "uart_stream.h"
@@ -149,11 +150,11 @@ int main(void)
 
 #if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW
     MX_SPI3_Init();
-    ST7735_CN8_Test_Init();
+    DisplayST7735_Init();
 #endif
 
 #if ST7735_CN8_SPI_BOX_TEST
-    ST7735_CN8_Test_DrawBox();
+    DisplayST7735_DrawGuide();
     uart_send("ST7735 CN8 SPI box test drawn\r\n");
     while (1) {
         HAL_Delay(1000);
@@ -351,7 +352,7 @@ int main(void)
 #endif
 
 #if ST7735_CN8_SPI_LIVE_VIEW
-        ST7735_CN8_RenderFrame32x32(upscaled, &objs, fsm_out.selected_idx);
+        DisplayST7735_RenderFrame32x32(upscaled, &objs, fsm_out.selected_idx);
 #endif
 
 #if STREAM_MULTI_OBJECT_BINARY
@@ -390,3 +391,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         }
     }
 }
+
+
+
+

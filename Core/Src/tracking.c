@@ -1,24 +1,33 @@
+/* Converts thermal detections into smoothed pan/tilt motion commands. */
 #include "tracking.h"
 #include "servo.h"
 
 #define SENSOR_CENTER_X      3.5f
 #define SENSOR_CENTER_Y      3.5f
 
-#define TRACK_DEADBAND_X     0.10f  /* pixels */
-#define TRACK_DEADBAND_Y     0.10f  /* pixels */
-#define SENSOR_HALF_RANGE    3.5f   /* from center (3.5) to edge */
+#define TRACK_PROC_SCALE     (31.0f / 7.0f) /* map 8x8 coordinates into 32x32 domain */
+#define TRACK_CENTER_X32     15.5f
+#define TRACK_CENTER_Y32     15.5f
+#define TRACK_HALF_RANGE32   15.5f
 
-#define TRACK_STEP_MIN_DEG   2.4f   /* calm target -> still responsive */
-#define TRACK_STEP_MAX_DEG   8.0f   /* fast target -> more aggressive */
-#define TRACK_MOTION_FULL    0.7f   /* reaches fast mode sooner */
+#define TRACK_DEADBAND_X32   0.45f /* sub-cell deadband in 32x32 coordinates */
+#define TRACK_DEADBAND_Y32   0.45f
 
-#define TRACK_VEL_ALPHA      0.55f  /* motion EWMA */
-#define TRACK_CMD_ALPHA_SLOW 0.55f  /* output filter when target is slow */
-#define TRACK_CMD_ALPHA_FAST 0.92f  /* output filter when target is fast */
+#define TRACK_STEP_MIN_DEG   2.1f
+#define TRACK_STEP_MAX_DEG   8.4f
+#define TRACK_MOTION_FULL32  3.2f
+
+#define TRACK_VEL_ALPHA      0.52f
+#define TRACK_CMD_ALPHA_SLOW 0.50f
+#define TRACK_CMD_ALPHA_FAST 0.90f
+
+#define TRACK_CONF_ALPHA     0.28f
+#define TRACK_CONF_MARGIN_FULL_C 3.8f
+#define TRACK_CONF_SIZE_FULL_PX  10.0f
 
 /* Lost-target behavior:
  * 1) Coast briefly in last known direction to recover target.
- * 2) If still lost for >5s, enter scan mode (pan sweep + tilt stepping). */
+ * 2) If still lost for >2.2 s, enter scan mode (pan sweep + tilt stepping). */
 #define TRACK_COAST_MS            1000U
 #define TRACK_SCAN_START_MS       2200U
 #define TRACK_SCAN_PAN_DEG_PER_S  45.0f
@@ -30,9 +39,10 @@
 
 static uint8_t tracking_enabled = 1U;
 static uint8_t has_prev_centroid = 0U;
-static float prev_cx = SENSOR_CENTER_X;
-static float prev_cy = SENSOR_CENTER_Y;
+static float prev_cx32 = TRACK_CENTER_X32;
+static float prev_cy32 = TRACK_CENTER_Y32;
 static float motion_ewma = 0.0f;
+static float conf_ewma = 0.0f;
 static float prev_pan_cmd = 0.0f;
 static float prev_tilt_cmd = 0.0f;
 static uint8_t has_prev_cmd = 0U;
@@ -48,8 +58,10 @@ static float absf_local(float v)
 
 static float clampf_local(float v, float lo, float hi)
 {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
     return v;
 }
 
@@ -60,12 +72,11 @@ static float normalize_deadband(float err, float deadband, float full_scale)
         return 0.0f;
     }
 
-    /* Joystick-like response: dead zone then normalized 0..1 output. */
     float n = (a - deadband) / (full_scale - deadband);
     n = clampf_local(n, 0.0f, 1.0f);
 
-    /* Keep center smooth but avoid sluggish mid-range response. */
-    n = 0.65f * n + 0.35f * (n * n);
+    /* Slight cubic emphasis for sub-cell aiming near center. */
+    n = (0.55f * n) + (0.45f * (n * n * n));
     return (err < 0.0f) ? -n : n;
 }
 
@@ -75,6 +86,7 @@ void Tracking_Init(void)
     has_prev_centroid = 0U;
     has_prev_cmd = 0U;
     motion_ewma = 0.0f;
+    conf_ewma = 0.0f;
     lost_since_ms = HAL_GetTick();
     last_update_ms = lost_since_ms;
     scan_pan_dir = 1U;
@@ -93,6 +105,8 @@ void Tracking_ResetSearchTimer(void)
     last_update_ms = now;
     has_prev_centroid = 0U;
     has_prev_cmd = 0U;
+    motion_ewma = 0.0f;
+    conf_ewma = 0.0f;
     prev_pan_cmd = 0.0f;
     prev_tilt_cmd = 0.0f;
 }
@@ -104,7 +118,7 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
     }
 
     uint32_t now = HAL_GetTick();
-    float dt_s = 0.1f; /* fallback for first update */
+    float dt_s = 0.1f;
     if (last_update_ms != 0U) {
         uint32_t dt_ms = now - last_update_ms;
         if (dt_ms > 0U) {
@@ -120,24 +134,25 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
         }
         lost_ms = now - lost_since_ms;
 
-        /* Short-term recovery: keep moving in last known direction, then fade out. */
         if ((lost_ms < TRACK_COAST_MS) && (has_prev_cmd != 0U)) {
             float fade = 1.0f - ((float)lost_ms / (float)TRACK_COAST_MS);
-            if (fade < 0.0f) fade = 0.0f;
+            if (fade < 0.0f)
+                fade = 0.0f;
             Servo_SetPan(Servo_GetPan() + (prev_pan_cmd * fade));
             Servo_SetTilt(Servo_GetTilt() + (prev_tilt_cmd * fade));
             has_prev_centroid = 0U;
             return;
         }
 
-        /* Long-term recovery: autonomous scan mode after 5 seconds lost. */
         if (lost_ms >= TRACK_SCAN_START_MS) {
             float pan = Servo_GetPan();
             float tilt = Servo_GetTilt();
             float pan_step = TRACK_SCAN_PAN_DEG_PER_S * dt_s;
             float tilt_step = TRACK_SCAN_TILT_DEG_PER_S * dt_s;
-            if (pan_step < 0.2f) pan_step = 0.2f; /* keep motion visible if dt jitters */
-            if (tilt_step < 0.1f) tilt_step = 0.1f;
+            if (pan_step < 0.2f)
+                pan_step = 0.2f;
+            if (tilt_step < 0.1f)
+                tilt_step = 0.1f;
 
             if (scan_pan_dir != 0U) {
                 pan += pan_step;
@@ -153,7 +168,6 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
                 }
             }
 
-            /* Continuous tilt sweep during scan mode. */
             if (scan_tilt_dir != 0U) {
                 tilt += tilt_step;
                 if (tilt >= TRACK_SCAN_TILT_MAX) {
@@ -174,55 +188,51 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
             return;
         }
 
-        /* Between coast and scan: hold while waiting for scan timeout. */
         has_prev_centroid = 0U;
         return;
     }
 
-    /* Target reacquired: return to normal tracking behavior. */
     lost_since_ms = 0U;
 
-    /* Error in 8x8 sensor coordinates. */
-    float ex = det->centroid_x - SENSOR_CENTER_X;
-    float ey = det->centroid_y - SENSOR_CENTER_Y;
+    /* Work in the same 32x32 space used by thermal processing. */
+    float cx32 = det->centroid_x * TRACK_PROC_SCALE;
+    float cy32 = det->centroid_y * TRACK_PROC_SCALE;
+    float ex32 = cx32 - TRACK_CENTER_X32;
+    float ey32 = cy32 - TRACK_CENTER_Y32;
 
-    float nx = normalize_deadband(ex, TRACK_DEADBAND_X, SENSOR_HALF_RANGE);
-    float ny = normalize_deadband(ey, TRACK_DEADBAND_Y, SENSOR_HALF_RANGE);
+    float nx = normalize_deadband(ex32, TRACK_DEADBAND_X32, TRACK_HALF_RANGE32);
+    float ny = normalize_deadband(ey32, TRACK_DEADBAND_Y32, TRACK_HALF_RANGE32);
 
-    /* Estimate target motion speed (pixels/frame), smoothed by EWMA. */
     float motion_raw = 0.0f;
     if (has_prev_centroid != 0U) {
-        float dx = det->centroid_x - prev_cx;
-        float dy = det->centroid_y - prev_cy;
-        motion_raw = absf_local(dx) + absf_local(dy); /* no sqrt needed */
+        float dx = cx32 - prev_cx32;
+        float dy = cy32 - prev_cy32;
+        motion_raw = absf_local(dx) + absf_local(dy);
     }
-    prev_cx = det->centroid_x;
-    prev_cy = det->centroid_y;
+    prev_cx32 = cx32;
+    prev_cy32 = cy32;
     has_prev_centroid = 1U;
 
     motion_ewma += TRACK_VEL_ALPHA * (motion_raw - motion_ewma);
-    float motion_norm = clampf_local(motion_ewma / TRACK_MOTION_FULL, 0.0f, 1.0f);
+    float motion_norm = clampf_local(motion_ewma / TRACK_MOTION_FULL32, 0.0f, 1.0f);
 
-    /* Faster target motion -> larger step budget and less command smoothing. */
-    float step_limit = TRACK_STEP_MIN_DEG +
-        (TRACK_STEP_MAX_DEG - TRACK_STEP_MIN_DEG) * motion_norm;
-    float cmd_alpha = TRACK_CMD_ALPHA_SLOW +
-        (TRACK_CMD_ALPHA_FAST - TRACK_CMD_ALPHA_SLOW) * motion_norm;
+    /* Confidence combines thermal margin and blob size. */
+    float temp_margin = det->max_temp_c - det->threshold_c;
+    float margin_norm = clampf_local(temp_margin / TRACK_CONF_MARGIN_FULL_C, 0.0f, 1.0f);
+    float size_norm = clampf_local((float)det->hot_count / TRACK_CONF_SIZE_FULL_PX, 0.0f, 1.0f);
+    float conf_now = 0.65f * margin_norm + 0.35f * size_norm;
+    conf_ewma += TRACK_CONF_ALPHA * (conf_now - conf_ewma);
 
-    /*
-     * Pan orientation in this project:
-     * - lower angle -> right
-     * - higher angle -> left
-     * If target is to the right (ex > 0), decrease pan angle.
-     */
+    float confidence_gate = 0.35f + (0.65f * conf_ewma);
+
+    float step_limit = TRACK_STEP_MIN_DEG + (TRACK_STEP_MAX_DEG - TRACK_STEP_MIN_DEG) * motion_norm;
+    step_limit *= confidence_gate;
+
+    float cmd_alpha = TRACK_CMD_ALPHA_SLOW + (TRACK_CMD_ALPHA_FAST - TRACK_CMD_ALPHA_SLOW) * motion_norm;
+    cmd_alpha = clampf_local(cmd_alpha * (0.65f + (0.35f * conf_ewma)), 0.25f, 0.95f);
+
+    /* Orientation mapping: pan angle decreases to move right; tilt increases to move down. */
     float raw_pan = -nx * step_limit;
-
-    /*
-     * Tilt orientation in this project:
-     * - lower angle -> up
-     * - higher angle -> down
-     * If target is lower in image (ey > 0), increase tilt angle.
-     */
     float raw_tilt = ny * step_limit;
 
     if (has_prev_cmd == 0U) {
@@ -234,13 +244,12 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
         prev_tilt_cmd += cmd_alpha * (raw_tilt - prev_tilt_cmd);
     }
 
-    /* Remember current tracking direction so scan mode starts by continuing
-     * in the same pan/tilt direction when target is later lost. */
     if (prev_pan_cmd > 0.0f) {
         scan_pan_dir = 1U;
     } else if (prev_pan_cmd < 0.0f) {
         scan_pan_dir = 0U;
     }
+
     if (prev_tilt_cmd > 0.0f) {
         scan_tilt_dir = 1U;
     } else if (prev_tilt_cmd < 0.0f) {
@@ -250,3 +259,7 @@ void Tracking_UpdateFromDetection(const ThermalDetection *det)
     Servo_SetPan(Servo_GetPan() + prev_pan_cmd);
     Servo_SetTilt(Servo_GetTilt() + prev_tilt_cmd);
 }
+
+
+
+

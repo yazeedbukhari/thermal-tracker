@@ -1,3 +1,4 @@
+/* I2C driver code to initialize and read the AMG8833 thermal array. */
 #include "amg8833.h"
 
 /* Conservative timeouts are fine at 10 FPS frame rate. */
@@ -105,3 +106,7 @@ HAL_StatusTypeDef AMG8833_ReadFrameCelsius(I2C_HandleTypeDef *hi2c, uint8_t addr
     AMG8833_ConvertRawToCelsius(raw_frame, pixels_c);
     return HAL_OK;
 }
+
+
+
+

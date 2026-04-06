@@ -1,15 +1,14 @@
-#include "st7735_cn8_spi_test.h"
+/* SPI/DMA display renderer for thermal map and object overlays. */
+#include "display_st7735.h"
 #include "config.h"
 
 /*
  * NUCLEO-F446ZE Arduino wiring:
- *   TFT SCL/SCK  -> D23 (PB3, SPI3_SCK)
- *   TFT SDA/MOSI -> D22 (PB5, SPI3_MOSI)
- *
- *   Control pins:
- *   TFT CS  -> D24 (PA4, GPIO)
- *   TFT DC  -> D9  (PD15, GPIO)
- *   TFT RST -> D8  (PF12, GPIO)
+ * TFT SCL/SCK  -> D23 (PB3, SPI3_SCK)
+ * TFT SDA/MOSI -> D22 (PB5, SPI3_MOSI)
+ * TFT CS       -> D24 (PA4)
+ * TFT DC       -> D9  (PD15)
+ * TFT RST      -> D8  (PF12)
  */
 
 #define TFT_SCK_GPIO_Port  GPIOB
@@ -53,6 +52,8 @@
 #define THERMAL_Q_MIN_SPAN 4.0f
 #define THERMAL_Q_ALPHA    0.25f
 #define THERMAL_SHARP_K    0.35f
+#define THERMAL_TARGET_PULL 0.28f
+#define THERMAL_TARGET_HALO 1.8f
 #define TFT_SRC_W          32U
 #define TFT_SRC_H          32U
 #define TFT_VIEW_W         128U
@@ -411,6 +412,10 @@ static void st7735_build_frame(uint8_t frame_idx, const float *upscaled_map,
     float target_lo;
     float target_hi;
     float span;
+    float selected_cx = -1.0f;
+    float selected_cy = -1.0f;
+    float selected_peak = 0.0f;
+    uint8_t selected_valid = 0U;
 
     for (uint16_t i = 0U; i < (uint16_t)(TFT_SRC_W * TFT_SRC_H); i++) {
         float t = upscaled_map[i];
@@ -450,6 +455,13 @@ static void st7735_build_frame(uint8_t frame_idx, const float *upscaled_map,
     s_dyn_lo += THERMAL_Q_ALPHA * (target_lo - s_dyn_lo);
     s_dyn_hi += THERMAL_Q_ALPHA * (target_hi - s_dyn_hi);
 
+    if ((objs != NULL) && (selected_idx < objs->count) && (objs->objects[selected_idx].valid != 0U)) {
+        selected_cx = objs->objects[selected_idx].centroid_x * ((float)(TFT_SRC_W - 1U) / 7.0f);
+        selected_cy = objs->objects[selected_idx].centroid_y * ((float)(TFT_SRC_H - 1U) / 7.0f);
+        selected_peak = objs->objects[selected_idx].peak_temp_c;
+        selected_valid = 1U;
+    }
+
     for (uint16_t y = 0U; y < TFT_VIEW_H; y++) {
         float gy = ((float)y) * (float)(TFT_SRC_H - 1U) / (float)(TFT_VIEW_H - 1U);
         uint16_t sy0 = (uint16_t)gy;
@@ -486,6 +498,18 @@ static void st7735_build_frame(uint8_t frame_idx, const float *upscaled_map,
                 t = t + (THERMAL_SHARP_K * (t - avg4));
             }
 
+            if (selected_valid != 0U) {
+                float src_x = ((float)x) * (float)(TFT_SRC_W - 1U) / (float)(TFT_VIEW_W - 1U);
+                float src_y = ((float)y) * (float)(TFT_SRC_H - 1U) / (float)(TFT_VIEW_H - 1U);
+                float dxs = src_x - selected_cx;
+                float dys = src_y - selected_cy;
+                float md = (dxs < 0.0f ? -dxs : dxs) + (dys < 0.0f ? -dys : dys);
+                if (md < THERMAL_TARGET_HALO) {
+                    float pull = 1.0f - (md / THERMAL_TARGET_HALO);
+                    t += THERMAL_TARGET_PULL * pull * (selected_peak - t);
+                }
+            }
+
             {
                 uint8_t q = quantize_temp_dynamic_u8(t, s_dyn_lo, s_dyn_hi);
                 fb[didx] = rgb565_to_be(heat_color_from_u8(q));
@@ -513,14 +537,13 @@ static void st7735_build_frame(uint8_t frame_idx, const float *upscaled_map,
         int16_t bw = (int16_t)((obj->max_x - obj->min_x + 1) * scale_x);
         int16_t bh = (int16_t)((obj->max_y - obj->min_y + 1) * scale_y);
         int16_t cx = (int16_t)(obj->centroid_x * (float)scale_x);
-        int16_t cy = (int16_t)(obj->centroid_y * (float)scale_y);
-
         if ((bx < 0) || (by < 0) || (bx >= (int16_t)TFT_VIEW_W) || (by >= (int16_t)TFT_VIEW_H)) {
             continue;
         }
         if ((bw <= 0) || (bh <= 0)) {
             continue;
         }
+        /* calculate height amd width for box */
         if ((bx + bw) > (int16_t)TFT_VIEW_W) {
             bw = (int16_t)TFT_VIEW_W - bx;
         }
@@ -542,6 +565,7 @@ static HAL_StatusTypeDef st7735_start_viewport_dma(uint8_t frame_idx)
 {
     HAL_StatusTypeDef st;
 
+    /* set screen window first, dma send starts after this */
     st = st7735_set_window(TFT_VIEW_X, TFT_VIEW_Y, (uint16_t)(TFT_VIEW_X + TFT_VIEW_W - 1U),
                            (uint16_t)(TFT_VIEW_Y + TFT_VIEW_H - 1U));
     if (st != HAL_OK) {
@@ -588,7 +612,7 @@ static void st7735_submit_frame(uint8_t frame_idx)
     }
 }
 
-void ST7735_CN8_Test_Init(void)
+void DisplayST7735_Init(void)
 {
     GPIO_InitTypeDef gpio = {0};
     uint32_t primask;
@@ -657,15 +681,15 @@ void ST7735_CN8_Test_Init(void)
     st7735_fill_screen(RGB565_BLACK);
 }
 
-void ST7735_CN8_Test_DrawBox(void)
+void DisplayST7735_DrawGuide(void)
 {
     st7735_fill_screen(RGB565_BLACK);
     st7735_rect(12U, 12U, 104U, 104U, RGB565_RED);
     st7735_rect(20U, 20U, 88U, 88U, RGB565_WHITE);
 }
 
-void ST7735_CN8_RenderFrame32x32(const float *upscaled_map, const ThermalObjectsResult *objs,
-                                 uint8_t selected_idx)
+void DisplayST7735_RenderFrame32x32(const float *upscaled_map,
+                                    const ThermalObjectsResult *objs, uint8_t selected_idx)
 {
     uint8_t build_idx;
     uint32_t primask;
@@ -679,8 +703,8 @@ void ST7735_CN8_RenderFrame32x32(const float *upscaled_map, const ThermalObjects
         if (s_pending_valid != 0U) {
             build_idx = s_pending_idx;
             s_pending_valid = 0U;
-            s_frames_dropped++;
         } else {
+            /* pick nxt buffer so dma dont fight same one */
             build_idx = (uint8_t)(s_tx_active_idx ^ 1U);
         }
     } else {
@@ -692,7 +716,7 @@ void ST7735_CN8_RenderFrame32x32(const float *upscaled_map, const ThermalObjects
     st7735_submit_frame(build_idx);
 }
 
-void ST7735_CN8_GetRenderStats(uint32_t *queued, uint32_t *dropped)
+void DisplayST7735_GetStats(uint32_t *queued, uint32_t *dropped)
 {
     uint32_t primask = irq_save();
     if (queued != NULL) {
@@ -755,3 +779,8 @@ void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
     s_pending_valid = 0U;
     irq_restore(primask);
 }
+
+
+
+
+

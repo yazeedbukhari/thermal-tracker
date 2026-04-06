@@ -1,3 +1,4 @@
+/* UART message and packet formatting/transmit routines. */
 #include "uart_stream.h"
 #include "config.h"
 #include <stdio.h>
@@ -206,3 +207,7 @@ void uart_send_um64_packet(uint16_t seq, const float *up, const ThermalObjectsRe
     HAL_UART_Transmit(&huart3, objtab, sizeof(objtab), 200);
     HAL_UART_Transmit(&huart3, payload, payload_len, 400);
 }
+
+
+
+

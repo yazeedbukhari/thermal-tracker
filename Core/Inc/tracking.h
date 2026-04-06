@@ -1,3 +1,4 @@
+/* Declarations for converting detections into servo tracking commands.  */
 #ifndef INC_TRACKING_H_
 #define INC_TRACKING_H_
 
@@ -10,3 +11,6 @@ void Tracking_ResetSearchTimer(void);
 void Tracking_UpdateFromDetection(const ThermalDetection *det);
 
 #endif /* INC_TRACKING_H_ */
+
+
+

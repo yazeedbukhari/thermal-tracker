@@ -1,3 +1,4 @@
+/* UART telemetry and compact frame streaming helpers. */
 #ifndef INC_UART_STREAM_H_
 #define INC_UART_STREAM_H_
 
@@ -18,3 +19,6 @@ void uart_send_um64_packet(uint16_t seq, const float *up, const ThermalObjectsRe
                            uint8_t selected_idx, int16_t servo_deg_x10);
 
 #endif /* INC_UART_STREAM_H_ */
+
+
+

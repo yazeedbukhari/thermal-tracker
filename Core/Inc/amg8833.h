@@ -1,16 +1,4 @@
-/*
- * amg8833.h — AMG8833 thermal array sensor driver (STM32 HAL I2C)
- *
- * Brings up the AMG8833, reads full 8x8 raw frames, and converts raw pixel
- * data into Celsius values. This module is hardware-facing only; thresholding,
- * bounding boxes, and centroid logic should live in thermal.c.
- *
- * Public API:  AMG8833_Probe, AMG8833_Init, AMG8833_ReadFrameRaw,
- *              AMG8833_ConvertRawToCelsius, AMG8833_ReadFrameCelsius
- *
- * Owner:
- */
-
+/* AMG8833 sensor setup and frame reads over I2C. */
 #ifndef INC_AMG8833_H_
 #define INC_AMG8833_H_
 
@@ -54,3 +42,5 @@ HAL_StatusTypeDef AMG8833_ReadFrameCelsius(I2C_HandleTypeDef *hi2c, uint8_t addr
 #endif
 
 #endif /* INC_AMG8833_H_ */
+
+

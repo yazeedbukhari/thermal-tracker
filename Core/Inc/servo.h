@@ -1,10 +1,10 @@
+/* Declarations for pan/tilt servo angle and PWM control.  */
 #ifndef INC_SERVO_H_
 #define INC_SERVO_H_
 
 #include "config.h"
 
 #define INIT_ANGLE 90
-
 #define MAX_ANGLE 180
 #define MIN_ANGLE 0
 
@@ -24,3 +24,6 @@ float Servo_GetPan(void);
 float Servo_GetTilt(void);
 
 #endif /* INC_SERVO_H_ */
+
+
+

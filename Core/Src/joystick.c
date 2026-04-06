@@ -1,3 +1,4 @@
+/* ADC-DMA joystick sampling and conversion to normalized axes. */
 // VRx uses Pin PA3 (A0)
 // VRy uses Pin PC0 (A1)
 
@@ -36,3 +37,7 @@ JoystickReading read_joystick_adc(void)
     r.vr_y = normalize(adc_dma_buf[1]);
     return r;
 }
+
+
+
+

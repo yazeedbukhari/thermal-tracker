@@ -1,3 +1,4 @@
+/* Declarations for joystick reading and normalization.  */
 #ifndef INC_JOYSTICK_H_
 #define INC_JOYSTICK_H_
 
@@ -11,3 +12,6 @@ void Joystick_DeInit(void);
 JoystickReading read_joystick_adc(void);
 
 #endif /* INC_JOYSTICK_H_ */
+
+
+

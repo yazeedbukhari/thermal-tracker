@@ -1,3 +1,4 @@
+/* State machine logic for tracking, seeking, fallback, and manual modes. */
 #include "fsm.h"
 #include "config.h"
 #include <string.h>
@@ -7,6 +8,8 @@
 typedef struct {
     uint8_t active;
     float cx, cy;
+    float peak_temp_c;
+    uint16_t hot_count;
     uint32_t last_seen_ms;
 } ObjTrack;
 
@@ -35,6 +38,47 @@ static float absf(float v)
     return (v < 0.0f) ? -v : v;
 }
 
+static float assoc_cost(const ThermalObject *obj, const ObjTrack *track)
+{
+    float spatial = absf(obj->centroid_x - track->cx) + absf(obj->centroid_y - track->cy);
+    float temp_bias = FSM_OBJ_ASSOC_TEMP_WEIGHT * absf(obj->peak_temp_c - track->peak_temp_c);
+    float size_bias = FSM_OBJ_ASSOC_SIZE_WEIGHT *
+                      absf((float)obj->hot_count - (float)track->hot_count);
+    return spatial + temp_bias + size_bias;
+}
+
+static float visible_priority(const ThermalObject *obj)
+{
+    return obj->peak_temp_c + (0.06f * (float)obj->hot_count);
+}
+
+static uint8_t pick_best_visible_idx(const ThermalObjectsResult *objs, uint8_t prefer_other,
+                                     uint8_t avoid_id)
+{
+    float best_score = -1000.0f;
+    uint8_t best_idx = 0xFFU;
+
+    for (uint8_t i = 0U; i < objs->count; i++) {
+        const ThermalObject *obj = &objs->objects[i];
+        float score;
+
+        if (obj->valid == 0U)
+            continue;
+
+        score = visible_priority(obj);
+        if ((prefer_other != 0U) && (ctx.obj_ids[i] != avoid_id)) {
+            score += FSM_OBJ_SWITCH_TEMP_BONUS_C;
+        }
+
+        if ((best_idx == 0xFFU) || (score > best_score)) {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+
+    return best_idx;
+}
+
 static uint8_t track_find_free(uint32_t now_ms, const uint8_t used[THERMAL_MAX_OBJECTS])
 {
     for (uint8_t t = 0U; t < THERMAL_MAX_OBJECTS; t++) {
@@ -53,6 +97,7 @@ static void associate_ids(const ThermalObjectsResult *objs, uint32_t now_ms)
 {
     uint8_t used[THERMAL_MAX_OBJECTS] = {0U};
 
+    /* clear old ids first so nxt scan dont reuse bad one */
     for (uint8_t i = 0U; i < THERMAL_MAX_OBJECTS; i++)
         ctx.obj_ids[i] = OBJ_ID_NONE;
 
@@ -68,8 +113,7 @@ static void associate_ids(const ThermalObjectsResult *objs, uint32_t now_ms)
                 continue;
             if ((now_ms - ctx.tracks[t].last_seen_ms) > FSM_OBJ_TRACK_STALE_MS)
                 continue;
-            float d =
-                absf(obj->centroid_x - ctx.tracks[t].cx) + absf(obj->centroid_y - ctx.tracks[t].cy);
+            float d = assoc_cost(obj, &ctx.tracks[t]);
             if ((d < best) && (d <= FSM_OBJ_ASSOC_MAX_DIST)) {
                 best    = d;
                 best_id = t;
@@ -81,6 +125,8 @@ static void associate_ids(const ThermalObjectsResult *objs, uint32_t now_ms)
             ctx.tracks[best_id].active       = 1U;
             ctx.tracks[best_id].cx           = obj->centroid_x;
             ctx.tracks[best_id].cy           = obj->centroid_y;
+            ctx.tracks[best_id].peak_temp_c  = obj->peak_temp_c;
+            ctx.tracks[best_id].hot_count    = obj->hot_count;
             ctx.tracks[best_id].last_seen_ms = now_ms;
         }
     }
@@ -97,6 +143,8 @@ static void associate_ids(const ThermalObjectsResult *objs, uint32_t now_ms)
         ctx.tracks[id].active       = 1U;
         ctx.tracks[id].cx           = obj->centroid_x;
         ctx.tracks[id].cy           = obj->centroid_y;
+        ctx.tracks[id].peak_temp_c  = obj->peak_temp_c;
+        ctx.tracks[id].hot_count    = obj->hot_count;
         ctx.tracks[id].last_seen_ms = now_ms;
     }
 
@@ -228,6 +276,7 @@ static void update_track_state(const ThermalObjectsResult *objs, uint32_t now)
         ctx.selected_idx = (uint8_t)si;
         ctx.selected_miss_since_ms = 0U;
     } else if (objs->count > 0U) {
+        /* wait tiny bit before we go to nxt state */
         if (ctx.selected_miss_since_ms == 0U) {
             ctx.selected_miss_since_ms = now;
             ctx.selected_idx = 0xFFU;
@@ -282,16 +331,16 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
                 ctx.seek_visible_since_ms = now;
 
             if ((now - ctx.seek_visible_since_ms) >= FSM_SEEK_ACCEPT_VISIBLE_MS) {
-                for (uint8_t i = 0U; i < objs->count; i++) {
-                    if (objs->objects[i].valid != 0U) {
-                        ctx.selected_id           = ctx.obj_ids[i];
+                {
+                    uint8_t best_idx = pick_best_visible_idx(objs, 1U, ctx.selected_id);
+                    if (best_idx != 0xFFU) {
+                        ctx.selected_id           = ctx.obj_ids[best_idx];
                         ctx.state                 = FSM_STATE_TRACK;
                         ctx.seek_has_ref          = 0U;
                         ctx.seek_enter_ms         = 0U;
                         ctx.seek_visible_since_ms = 0U;
                         ctx.fallback_enter_ms     = 0U;
                         switched                  = 1U;
-                        break;
                     }
                 }
             }
@@ -314,11 +363,11 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
         int8_t si        = find_idx_by_id(objs, ctx.selected_id);
         ctx.selected_idx = (si >= 0) ? (uint8_t)si : 0xFFU;
     } else {
-        /* still seeking — decide what to show */
+        /* still seeking, show best blob if its still there */
         uint32_t seek_ms = now - ctx.seek_enter_ms;
         if ((seek_ms < FSM_SEEK_PRE_SCAN_WAIT_MS) && (objs->count > 0U) &&
             (objs->objects[0].valid != 0U)) {
-            ctx.selected_idx = 0U;
+            ctx.selected_idx = pick_best_visible_idx(objs, 0U, ctx.selected_id);
         } else {
             ctx.selected_idx = 0xFFU;
         }
@@ -335,10 +384,15 @@ static void update_fallback_state(const ThermalObjectsResult *objs, uint32_t now
     } else if (objs->count > 0U) {
         if ((now - ctx.fallback_enter_ms) >= FSM_FALLBACK_LAG_MS) {
             /* timeout — reassign to first valid */
-            ctx.selected_id       = ctx.obj_ids[0];
-            ctx.selected_idx      = 0U;
-            ctx.state             = FSM_STATE_TRACK;
-            ctx.fallback_enter_ms = 0U;
+            uint8_t best_idx = pick_best_visible_idx(objs, 0U, ctx.selected_id);
+            if (best_idx != 0xFFU) {
+                ctx.selected_id       = ctx.obj_ids[best_idx];
+                ctx.selected_idx      = best_idx;
+                ctx.state             = FSM_STATE_TRACK;
+                ctx.fallback_enter_ms = 0U;
+            } else {
+                ctx.selected_idx = 0xFFU;
+            }
         } else {
             ctx.selected_idx = 0xFFU;
         }
@@ -411,3 +465,8 @@ void FSM_Update(const FSM_Input *in, FSM_Output *out)
 
     produce_output(in, objs, out);
 }
+
+
+
+
+

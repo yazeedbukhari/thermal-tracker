@@ -1,3 +1,4 @@
+/* Declarations for thermal object detection and frame upscaling.  */
 #ifndef INC_THERMAL_H_
 #define INC_THERMAL_H_
 
@@ -51,3 +52,6 @@ void Thermal_UpscaleNearest8x8(const float in8x8[64], float *out, uint16_t out_w
 void Thermal_UpscaleBilinear8x8(const float in8x8[64], float *out, uint16_t out_w, uint16_t out_h);
 
 #endif /* INC_THERMAL_H_ */
+
+
+
