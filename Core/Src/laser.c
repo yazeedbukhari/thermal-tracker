@@ -1,6 +1,6 @@
 #include "laser.h"
 
-/* External trigger button (active-low with pull-up). */
+// External trigger button (active-low with pull-up)
 #define LASER_BTN_GPIO_Port GPIOC
 #define LASER_BTN_Pin       GPIO_PIN_2
 

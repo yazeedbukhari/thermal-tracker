@@ -1,52 +1,34 @@
-/*
- * fsm.c — System finite state machine (TRACK / SEEK / FALLBACK / MANUAL)
- *
- * Manages multi-object ID association, object selection/cycling, seek-other
- * logic, and fallback reassignment.  Produces a ThermalDetection for the
- * selected object that the downstream servo tracker consumes directly.
- *
- * Owner:
- */
-
 #include "fsm.h"
 #include "config.h"
 #include <string.h>
 
 #define OBJ_ID_NONE 0xFFU
 
-/* ---- persistent object tracks ---- */
 typedef struct {
     uint8_t active;
     float cx, cy;
     uint32_t last_seen_ms;
 } ObjTrack;
 
-/* ---- internal context ---- */
 typedef struct {
     fsm_state_t state;
 
-    /* object-ID association */
     ObjTrack tracks[THERMAL_MAX_OBJECTS];
-    uint8_t obj_ids[THERMAL_MAX_OBJECTS]; /* per-detection-slot → track ID */
+    uint8_t obj_ids[THERMAL_MAX_OBJECTS];
 
-    /* selection */
-    uint8_t selected_id;  /* persistent track ID           */
-    uint8_t selected_idx; /* index into current objs[]     */
+    uint8_t selected_id;
+    uint8_t selected_idx;
     uint32_t selected_miss_since_ms;
 
-    /* seek state */
     uint8_t seek_has_ref;
     float seek_ref_cx, seek_ref_cy;
     uint32_t seek_enter_ms;
     uint32_t seek_visible_since_ms;
 
-    /* fallback state */
     uint32_t fallback_enter_ms;
 } FSM_Ctx;
 
 static FSM_Ctx ctx;
-
-/* ---- helpers ---- */
 
 static float absf(float v)
 {
@@ -74,7 +56,6 @@ static void associate_ids(const ThermalObjectsResult *objs, uint32_t now_ms)
     for (uint8_t i = 0U; i < THERMAL_MAX_OBJECTS; i++)
         ctx.obj_ids[i] = OBJ_ID_NONE;
 
-    /* match existing tracks */
     for (uint8_t i = 0U; i < objs->count; i++) {
         const ThermalObject *obj = &objs->objects[i];
         if (obj->valid == 0U)
@@ -186,7 +167,6 @@ static void fill_detection(ThermalDetection *det, const ThermalObjectsResult *ob
     det->centroid_y          = obj->centroid_y;
 }
 
-/* ---- state helpers ---- */
 
 static void handle_manual_toggle(const FSM_Input *in)
 {
@@ -212,7 +192,6 @@ static void handle_btn_next(const FSM_Input *in, const ThermalObjectsResult *obj
         return;
 
     if (objs->count > 1U) {
-        /* multiple objects visible: cycle to next */
         ctx.selected_id           = pick_next_visible_id(objs, ctx.selected_id);
         ctx.state                 = FSM_STATE_TRACK;
         ctx.fallback_enter_ms     = 0U;
@@ -250,8 +229,6 @@ static void update_track_state(const ThermalObjectsResult *objs, uint32_t now)
         ctx.selected_idx = (uint8_t)si;
         ctx.selected_miss_since_ms = 0U;
     } else if (objs->count > 0U) {
-        /* Selected ID not visible: debounce brief association misses to
-         * avoid ping-pong between two nearby objects. */
         if (ctx.selected_miss_since_ms == 0U) {
             ctx.selected_miss_since_ms = now;
             ctx.selected_idx = 0xFFU;
@@ -275,7 +252,6 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
 {
     uint8_t switched = 0U;
 
-    /* look for a different / far-enough object */
     if (objs->count > 0U) {
         for (uint8_t i = 0U; i < objs->count; i++) {
             if (objs->objects[i].valid == 0U)
@@ -303,7 +279,6 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
         }
 
         if (switched == 0U) {
-            /* stable-visible fallback */
             if (ctx.seek_visible_since_ms == 0U)
                 ctx.seek_visible_since_ms = now;
 
@@ -322,7 +297,6 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
                 }
             }
 
-            /* no-ref multi-object fallback */
             if ((switched == 0U) && (ctx.seek_has_ref == 0U) && (objs->count > 1U)) {
                 ctx.selected_id           = pick_next_visible_id(objs, ctx.selected_id);
                 ctx.state                 = FSM_STATE_TRACK;
@@ -337,7 +311,6 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
         ctx.seek_visible_since_ms = 0U;
     }
 
-    /* resolve selected_idx for output */
     if (switched != 0U) {
         int8_t si        = find_idx_by_id(objs, ctx.selected_id);
         ctx.selected_idx = (si >= 0) ? (uint8_t)si : 0xFFU;
@@ -346,10 +319,8 @@ static void update_seek_state(const ThermalObjectsResult *objs, uint32_t now)
         uint32_t seek_ms = now - ctx.seek_enter_ms;
         if ((seek_ms < FSM_SEEK_PRE_SCAN_WAIT_MS) && (objs->count > 0U) &&
             (objs->objects[0].valid != 0U)) {
-            /* grace window: keep tracking any visible object */
             ctx.selected_idx = 0U;
         } else {
-            /* after grace: force lost to trigger scan behavior */
             ctx.selected_idx = 0xFFU;
         }
     }
@@ -359,7 +330,6 @@ static void update_fallback_state(const ThermalObjectsResult *objs, uint32_t now
 {
     int8_t si = find_idx_by_id(objs, ctx.selected_id);
     if (si >= 0) {
-        /* selected came back */
         ctx.state             = FSM_STATE_TRACK;
         ctx.selected_idx      = (uint8_t)si;
         ctx.fallback_enter_ms = 0U;
@@ -406,8 +376,6 @@ static void produce_output(const FSM_Input *in, const ThermalObjectsResult *objs
     }
 }
 
-/* ---- public API ---- */
-
 void FSM_Init(void)
 {
     memset(&ctx, 0, sizeof(ctx));
@@ -422,14 +390,11 @@ void FSM_Update(const FSM_Input *in, FSM_Output *out)
     const ThermalObjectsResult *objs = in->objs;
     uint32_t now                     = in->now_ms;
 
-    /* ---- ID association (runs every frame) ---- */
     associate_ids(objs, now);
 
-    /* ---- input processing (in priority order) ---- */
     handle_manual_toggle(in);
     handle_btn_next(in, objs, now);
 
-    /* ---- state machine update ---- */
     switch (ctx.state) {
     case FSM_STATE_TRACK:
         update_track_state(objs, now);
@@ -445,6 +410,5 @@ void FSM_Update(const FSM_Input *in, FSM_Output *out)
         break;
     }
 
-    /* ---- produce outputs ---- */
     produce_output(in, objs, out);
 }

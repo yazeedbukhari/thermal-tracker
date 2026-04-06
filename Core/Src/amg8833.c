@@ -1,12 +1,3 @@
-/*
- * amg8833.c — AMG8833 thermal array sensor driver (STM32 HAL I2C)
- *
- * Implements sensor probe, initialization, raw frame read, and raw-to-Celsius
- * conversion for all 64 thermal pixels.
- *
- * Owner: Ali
- */
-
 #include "amg8833.h"
 
 /* Conservative timeouts are fine at 10 FPS frame rate. */

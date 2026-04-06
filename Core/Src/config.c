@@ -1,12 +1,3 @@
-/*
- * config.c — HAL peripheral initialization (CubeMX-generated + manual edits)
- *
- * Defines all HAL peripheral handles and their init functions: system clock,
- * USART3, USB OTG, GPIO, ADC1. Will grow to include MX_I2C1_Init,
- * MX_TIM3_Init, and MX_DMA_Init as those peripherals are brought online.
- * Also contains Error_Handler and assert_failed.
- */
-
 #include "config.h"
 #include "main.h"
 

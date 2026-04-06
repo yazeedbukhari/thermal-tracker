@@ -1,15 +1,3 @@
-/*
- * thermal.h - Thermal frame analysis (dynamic threshold + bbox + centroid)
- *
- * Pure math module with no hardware dependencies. Takes one raw 8x8 thermal
- * frame (64 values, row-major), computes dynamic-threshold hot-pixel detection,
- * and outputs bounding box + weighted centroid metadata.
- *
- * Public API:  Thermal_AnalyzeFrame8x8
- *
- * Owner:
- */
-
 #ifndef INC_THERMAL_H_
 #define INC_THERMAL_H_
 

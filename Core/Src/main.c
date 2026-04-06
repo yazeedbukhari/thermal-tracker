@@ -1,11 +1,3 @@
-/*
- * main.c — Application entry point and super loop
- *
- * Initializes all peripherals, then runs the 10 Hz frame-synchronous pipeline:
- *   sensor read -> thermal detect -> FSM tick -> [Kalman] -> tracking ->
- *   laser gate -> display/UART stream.
- */
-
 #include "main.h"
 #include "amg8833.h"
 #include "config.h"

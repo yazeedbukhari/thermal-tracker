@@ -1,16 +1,3 @@
-/*
- * joystick.c — Analog joystick input (ADC1 + DMA2, 2-channel scan)
- *
- * Reads X/Y axes from the joystick via ADC1 continuous scan mode with DMA2
- * (Stream 0, Channel 0) writing into a circular half-word buffer. DMA runs
- * forever after Joystick_Init(); read_joystick_adc() just snapshots the
- * buffer and normalizes.
- *
- * Returns normalized values in -1.0..+1.0 with a ~10% center dead zone.
- *
- * Owner: Yazeed
- */
-
 // VRx uses Pin PA3 (A0)
 // VRy uses Pin PC0 (A1)
 

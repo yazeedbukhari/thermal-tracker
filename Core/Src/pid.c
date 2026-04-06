@@ -1,16 +1,4 @@
-/*
- * pid.c — Generic PID controller (one instance per axis)
- *
- * Converts pixel-space error (centroid offset from frame center) into a servo
- * angle delta. Supports integral anti-windup and an external velocity estimate
- * for the derivative term once the Kalman filter is active.
- *
- * Owner: Yazeed
- */
-
 #include "pid.h"
-
-/* ------------------------------------------------------------------ helpers */
 
 static float clampf(float v, float lo, float hi)
 {
@@ -20,8 +8,6 @@ static float clampf(float v, float lo, float hi)
         return hi;
     return v;
 }
-
-/* ------------------------------------------------------------------ public  */
 
 void PID_Init(PID_Instance *pid, float kp, float ki, float kd, float integral_limit,
               float output_limit, float dead_band)
@@ -54,24 +40,14 @@ float PID_Update(PID_Instance *pid, float error, float dt, float velocity_est, u
     pid->integral = clampf(pid->integral, -pid->integral_limit, pid->integral_limit);
     float i_term  = pid->Ki * pid->integral;
 
-    /* Derivative
-     * On the very first call prev_error is 0, which would produce a large
-     * spike. Skip the D term that tick and seed prev_error instead.
-     *
-     * Once the Kalman filter is running the caller may pass a smoothed
-     * velocity estimate; otherwise we fall back to finite difference.      */
     float d_term = 0.0f;
 
     if (pid->initialized) {
         float derivative;
 
         if (use_ext_vel) {
-            /* External estimate already in pixels/s — negate because a
-             * positive velocity means the error is shrinking, so we want
-             * to damp (oppose) it.                                         */
             derivative = -velocity_est;
         } else {
-            /* Finite difference: rate of change of error                   */
             derivative = (dt > 0.0f) ? ((error - pid->prev_error) / dt) : 0.0f;
         }
 
@@ -81,7 +57,6 @@ float PID_Update(PID_Instance *pid, float error, float dt, float velocity_est, u
     pid->prev_error  = error;
     pid->initialized = 1;
 
-    /* Sum and clamp output */
     float output = p_term + i_term + d_term;
     return clampf(output, -pid->output_limit, pid->output_limit);
 }

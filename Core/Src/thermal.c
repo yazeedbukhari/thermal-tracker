@@ -1,12 +1,3 @@
-/*
- * thermal.c - Thermal frame analysis (dynamic threshold + bbox + centroid)
- *
- * Implements the same dynamic-threshold detection logic used in the Arduino
- * bounding box prototype, adapted for STM32 project modules.
- *
- * Owner: Ali
- */
-
 #include "thermal.h"
 
 #define TEMP_OFFSET_C               5.5f

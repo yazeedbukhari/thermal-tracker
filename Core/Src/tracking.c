@@ -1,7 +1,3 @@
-/*
- * tracking.c - Thermal centroid to pan/tilt servo tracker
- */
-
 #include "tracking.h"
 #include "servo.h"
 
