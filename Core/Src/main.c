@@ -2,11 +2,12 @@
 #include "main.h"
 #include "amg8833.h"
 #include "config.h"
+#include "display_st7735.h"
 #include "fsm.h"
 #include "joystick.h"
 #include "laser.h"
+#include "kalman.h"
 #include "servo.h"
-#include "display_st7735.h"
 #include "thermal.h"
 #include "tracking.h"
 #include "uart_stream.h"
@@ -17,17 +18,7 @@
 #define MODE_LED_GPIO_Port GPIOD
 #define MODE_LED_Pin       GPIO_PIN_13
 
-#define AMG8833_BRINGUP_TEST       1U
-#define AMG_FRAME_PERIOD_MS        50U  /* 20 FPS */
-#define STREAM_MULTI_OBJECT_BINARY 0U
-#define UPSCALED_STREAM_PERIOD_MS  50U  /* send each sensor frame (~20 FPS) */
-#define THERMAL_SERVO_TRACK_TEST   1U
-#define ST7735_CN8_SPI_BOX_TEST    0U
-#define ST7735_CN8_SPI_LIVE_VIEW   1U
-#define USE_FAST_NEAREST_UPSCALE   0U
-
-/* Keep in sync with laser.c lock behavior. */
-#define LASER_LOCK_TRACK_REQUIRED 1U
+#define AMG_FRAME_PERIOD_MS 50U /* 20 FPS */
 
 /* Manual joystick control profile:
  * convert analog [-1..1] into 3 discrete movement modes to reduce jitter/work. */
@@ -45,11 +36,6 @@
 #define MANUAL_TILT_MIN_DEG      30.0f
 #define MANUAL_TILT_MAX_DEG      130.0f
 
-/* Optional Kalman pass-through scaffold (kept disabled by default). */
-#define USE_KALMAN_FILTER 1U
-
-#if USE_KALMAN_FILTER
-#include "kalman.h"
 #define KALMAN_Q_POS 0.01f
 #define KALMAN_Q_VEL 0.01f
 #define KALMAN_R     0.5f
@@ -77,7 +63,6 @@ static void apply_kalman_filter(KalmanAxis *kalman_cx, KalmanAxis *kalman_cy,
         filtered_det->centroid_y = Kalman_GetPosition(kalman_cy);
     }
 }
-#endif
 
 static volatile uint8_t g_next_object_request = 0U;
 static volatile uint8_t g_btn_released_request = 0U;
@@ -135,7 +120,7 @@ static float quantized_step(float axis)
     return (axis < 0.0f) ? -step : step;
 }
 
-int main(void)
+static void init_common_peripherals(void)
 {
     HAL_Init();
     SystemClock_Config();
@@ -144,42 +129,163 @@ int main(void)
     MX_USART3_UART_Init();
     Laser_Init();
 
-#if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW || !AMG8833_BRINGUP_TEST
     MX_DMA_Init();
-#endif
+}
 
-#if ST7735_CN8_SPI_BOX_TEST || ST7735_CN8_SPI_LIVE_VIEW
+static void init_display_path(void)
+{
     MX_SPI3_Init();
     DisplayST7735_Init();
-#endif
+}
 
-#if ST7735_CN8_SPI_BOX_TEST
-    DisplayST7735_DrawGuide();
-    uart_send("ST7735 CN8 SPI box test drawn\r\n");
-    while (1) {
-        HAL_Delay(1000);
-    }
-#endif
-
-#if AMG8833_BRINGUP_TEST
+static void init_runtime_peripherals(void)
+{
     MX_I2C1_Init();
-#if THERMAL_SERVO_TRACK_TEST
+
     MX_ADC1_Init();
     Joystick_Init();
     MX_TIM3_Init();
     Servo_Init();
+
     Tracking_Init();
     FSM_Init();
-#endif
-#else
-    MX_USB_OTG_FS_PCD_Init();
-    MX_ADC1_Init();
-    MX_TIM3_Init();
-    Joystick_Init();
-    Servo_Init();
-#endif
+}
 
-#if AMG8833_BRINGUP_TEST
+static void amg_fail_loop(const char *msg)
+{
+    uart_send(msg);
+    while (1) {
+        Laser_Update(0U);
+        HAL_Delay(100);
+    }
+}
+
+static void init_amg_sensor(uint8_t *amg_addr)
+{
+    char addr_msg[32];
+
+    uart_send("AMG8833 bring-up test\r\n");
+    if (AMG8833_Probe(&hi2c1, amg_addr) != HAL_OK) {
+        amg_fail_loop("ERR_PROBE (check wiring/address)\r\n");
+    }
+    if (AMG8833_Init(&hi2c1, *amg_addr) != HAL_OK) {
+        amg_fail_loop("ERR_INIT\r\n");
+    }
+
+    (void)snprintf(addr_msg, sizeof(addr_msg), "READY addr=0x%02X\r\n", *amg_addr);
+    uart_send(addr_msg);
+}
+
+static void fill_fsm_input(FSM_Input *fsm_in, ThermalObjectsResult *objs, uint32_t now,
+                           JoystickReading joy)
+{
+    fsm_in->objs = objs;
+    fsm_in->now_ms = now;
+    fsm_in->btn_next = (g_next_object_request != 0U);
+    fsm_in->btn_released = (g_btn_released_request != 0U);
+    fsm_in->joy = joy;
+    g_next_object_request = 0U;
+    g_btn_released_request = 0U;
+}
+
+static void handle_manual_servo_step(const JoystickReading *joy, uint32_t now,
+                                     uint32_t *next_manual_step_ms)
+{
+    float next_pan;
+    float next_tilt;
+    float joy_abs = dominant_axis_abs(joy);
+    uint32_t period_ms = manual_period_ms(joy_abs);
+
+    Tracking_Enable(0U);
+    if ((int32_t)(now - *next_manual_step_ms) < 0) {
+        Laser_Update(0U);
+        return;
+    }
+
+    *next_manual_step_ms = now + period_ms;
+    next_pan = Servo_GetPan() + quantized_step(joy->vr_x);
+    next_tilt = Servo_GetTilt() + quantized_step(joy->vr_y);
+
+    if (next_pan < MANUAL_PAN_MIN_DEG) {
+        next_pan = MANUAL_PAN_MIN_DEG;
+    }
+    if (next_pan > MANUAL_PAN_MAX_DEG) {
+        next_pan = MANUAL_PAN_MAX_DEG;
+    }
+    if (next_tilt < MANUAL_TILT_MIN_DEG) {
+        next_tilt = MANUAL_TILT_MIN_DEG;
+    }
+    if (next_tilt > MANUAL_TILT_MAX_DEG) {
+        next_tilt = MANUAL_TILT_MAX_DEG;
+    }
+
+    /* keep the joystick feel a bit chunky, it hides the small ADC noise */
+    Servo_SetPan(next_pan);
+    Servo_SetTilt(next_tilt);
+    Laser_Update(0U);
+}
+
+static void service_manual_input(uint32_t now, ThermalObjectsResult *objs, FSM_Input *fsm_in,
+                                 FSM_Output *fsm_out, uint32_t *next_manual_step_ms)
+{
+    JoystickReading joy;
+
+    if ((state_manual == 0) && (g_next_object_request == 0U) && (g_btn_released_request == 0U)) {
+        return;
+    }
+
+    joy = read_joystick_adc();
+    fill_fsm_input(fsm_in, objs, now, joy);
+    FSM_Update(fsm_in, fsm_out);
+
+    if (fsm_out->state == FSM_STATE_MANUAL) {
+        handle_manual_servo_step(&joy, now, next_manual_step_ms);
+    }
+}
+
+static void update_tracking_mode(const FSM_Output *fsm_out, ThermalDetection *track_det,
+                                 uint8_t *was_manual_mode)
+{
+    uint8_t is_manual_mode = (fsm_out->state == FSM_STATE_MANUAL) ? 1U : 0U;
+
+    if ((*was_manual_mode != 0U) && (is_manual_mode == 0U)) {
+        Tracking_ResetSearchTimer();
+    }
+    *was_manual_mode = is_manual_mode;
+
+    if (is_manual_mode != 0U) {
+        Tracking_Enable(0U);
+    } else {
+        Tracking_Enable(1U);
+        Tracking_UpdateFromDetection(track_det);
+    }
+}
+
+static void update_laser_lock(const FSM_Output *fsm_out, const ThermalDetection *track_det)
+{
+    uint8_t laser_locked = 0U;
+
+    if ((fsm_out->state == FSM_STATE_TRACK) && (track_det->target_found != 0U)) {
+        laser_locked = 1U;
+    }
+
+    /* dont flash the laser unless tracking locks  */
+    Laser_Update(laser_locked);
+}
+
+static void output_frame(float *upscaled, ThermalObjectsResult *objs, const FSM_Output *fsm_out)
+{
+    (void)objs;
+
+    DisplayST7735_RenderFrame32x32(upscaled, objs, fsm_out->selected_idx);
+}
+
+int main(void)
+{
+    init_common_peripherals();
+    init_display_path();
+    init_runtime_peripherals();
+
     uint8_t amg_addr = 0;
     float frame[AMG8833_PIXEL_COUNT];
     static float upscaled[UPSCALE_W * UPSCALE_H];
@@ -187,101 +293,26 @@ int main(void)
     FSM_Input fsm_in;
     FSM_Output fsm_out;
     ThermalDetection track_det;
-
     uint32_t next_frame_ms = HAL_GetTick();
     uint32_t next_manual_step_ms = next_frame_ms;
     uint8_t was_manual_mode = 0U;
-#if STREAM_MULTI_OBJECT_BINARY
-    uint32_t next_up_tx_ms = HAL_GetTick();
-    uint16_t up_seq = 0U;
-#endif
 
-#if USE_KALMAN_FILTER
     KalmanAxis kalman_cx;
     KalmanAxis kalman_cy;
     uint32_t last_frame_ms = next_frame_ms;
     Kalman_Init(&kalman_cx, KALMAN_Q_POS, KALMAN_Q_VEL, KALMAN_R);
     Kalman_Init(&kalman_cy, KALMAN_Q_POS, KALMAN_Q_VEL, KALMAN_R);
-#endif
 
-    uart_send("AMG8833 bring-up test\r\n");
-    if (AMG8833_Probe(&hi2c1, &amg_addr) != HAL_OK) {
-        uart_send("ERR_PROBE (check wiring/address)\r\n");
-        while (1) {
-            Laser_Update(0U);
-            HAL_Delay(100);
-        }
-    }
-
-    if (AMG8833_Init(&hi2c1, amg_addr) != HAL_OK) {
-        uart_send("ERR_INIT\r\n");
-        while (1) {
-            Laser_Update(0U);
-            HAL_Delay(100);
-        }
-    }
-
-    {
-        char addr_msg[32];
-        (void)snprintf(addr_msg, sizeof(addr_msg), "READY addr=0x%02X\r\n", amg_addr);
-        uart_send(addr_msg);
-    }
-
+    init_amg_sensor(&amg_addr);
     memset(&objs, 0, sizeof(objs));
-#endif
 
     while (1) {
-#if AMG8833_BRINGUP_TEST
         uint32_t now = HAL_GetTick();
+
         update_mode_led();
+        service_manual_input(now, &objs, &fsm_in, &fsm_out, &next_manual_step_ms);
 
-        if ((state_manual != 0) || (g_next_object_request != 0U) || (g_btn_released_request != 0U)) {
-            JoystickReading joy = read_joystick_adc();
-
-            fsm_in.objs = &objs;
-            fsm_in.now_ms = now;
-            fsm_in.btn_next = (g_next_object_request != 0U);
-            fsm_in.btn_released = (g_btn_released_request != 0U);
-            fsm_in.joy = joy;
-            g_next_object_request = 0U;
-            g_btn_released_request = 0U;
-
-            FSM_Update(&fsm_in, &fsm_out);
-
-#if THERMAL_SERVO_TRACK_TEST
-            if (fsm_out.state == FSM_STATE_MANUAL) {
-                Tracking_Enable(0U);
-
-                float joy_abs = dominant_axis_abs(&joy);
-                uint32_t period_ms = manual_period_ms(joy_abs);
-                if ((int32_t)(now - next_manual_step_ms) >= 0) {
-                    float next_pan;
-                    float next_tilt;
-                    next_manual_step_ms = now + period_ms;
-
-                    next_pan = Servo_GetPan() + quantized_step(joy.vr_x);
-                    next_tilt = Servo_GetTilt() + quantized_step(joy.vr_y);
-                    if (next_pan < MANUAL_PAN_MIN_DEG) {
-                        next_pan = MANUAL_PAN_MIN_DEG;
-                    }
-                    if (next_pan > MANUAL_PAN_MAX_DEG) {
-                        next_pan = MANUAL_PAN_MAX_DEG;
-                    }
-                    if (next_tilt < MANUAL_TILT_MIN_DEG) {
-                        next_tilt = MANUAL_TILT_MIN_DEG;
-                    }
-                    if (next_tilt > MANUAL_TILT_MAX_DEG) {
-                        next_tilt = MANUAL_TILT_MAX_DEG;
-                    }
-
-                    Servo_SetPan(next_pan);
-                    Servo_SetTilt(next_tilt);
-                }
-                Laser_Update(0U);
-            }
-#endif
-        }
-
+        /* keep this cadence steady or tracking starts skwing */
         if ((int32_t)(now - next_frame_ms) < 0) {
             HAL_Delay(1);
             continue;
@@ -295,92 +326,27 @@ int main(void)
         }
 
         Thermal_DetectObjects8x8(frame, &objs);
-
-        fsm_in.objs = &objs;
-        fsm_in.now_ms = now;
-        fsm_in.btn_next = (g_next_object_request != 0U);
-        fsm_in.btn_released = (g_btn_released_request != 0U);
-        fsm_in.joy = read_joystick_adc();
-        g_next_object_request = 0U;
-        g_btn_released_request = 0U;
-
+        fill_fsm_input(&fsm_in, &objs, now, read_joystick_adc());
         FSM_Update(&fsm_in, &fsm_out);
 
-#if THERMAL_SERVO_TRACK_TEST
-        {
-            uint8_t is_manual_mode = (fsm_out.state == FSM_STATE_MANUAL) ? 1U : 0U;
-            if ((was_manual_mode != 0U) && (is_manual_mode == 0U)) {
-                Tracking_ResetSearchTimer();
-            }
-            was_manual_mode = is_manual_mode;
-        }
-#endif
-
-#if USE_KALMAN_FILTER
         apply_kalman_filter(&kalman_cx, &kalman_cy, &fsm_out, &track_det, now, &last_frame_ms);
-#else
-        track_det = fsm_out.det;
-#endif
 
-#if THERMAL_SERVO_TRACK_TEST
-        if (fsm_out.state == FSM_STATE_MANUAL) {
-            Tracking_Enable(0U);
-        } else {
-            Tracking_Enable(1U);
-            Tracking_UpdateFromDetection(&track_det);
-        }
-#endif
-
-        {
-            uint8_t laser_locked = 0U;
-#if LASER_LOCK_TRACK_REQUIRED
-            if ((fsm_out.state == FSM_STATE_TRACK) && (track_det.target_found != 0U)) {
-                laser_locked = 1U;
-            }
-#else
-            if (track_det.target_found != 0U) {
-                laser_locked = 1U;
-            }
-#endif
-            Laser_Update(laser_locked);
-        }
-
-#if USE_FAST_NEAREST_UPSCALE
-        Thermal_UpscaleNearest8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
-#else
+        update_tracking_mode(&fsm_out, &track_det, &was_manual_mode);
+        update_laser_lock(&fsm_out, &track_det);
         Thermal_UpscaleBilinear8x8(frame, upscaled, UPSCALE_W, UPSCALE_H);
-#endif
-
-#if ST7735_CN8_SPI_LIVE_VIEW
-        DisplayST7735_RenderFrame32x32(upscaled, &objs, fsm_out.selected_idx);
-#endif
-
-#if STREAM_MULTI_OBJECT_BINARY
-        if ((int32_t)(now - next_up_tx_ms) >= 0) {
-            next_up_tx_ms = now + UPSCALED_STREAM_PERIOD_MS;
-            uart_send_um64_packet(up_seq++, upscaled, &objs, fsm_out.selected_idx,
-                                  (int16_t)(Servo_GetPan() * 10.0f));
-        }
-#elif !ST7735_CN8_SPI_LIVE_VIEW
-        uart_send("BEGIN\r\n");
-        uart_send_frame_csv(frame);
-        uart_send_meta_csv(&track_det, Servo_GetPan());
-        uart_send("END\r\n");
-#endif
-#endif
+        output_frame(upscaled, &objs, &fsm_out);
     }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     uint32_t now = HAL_GetTick();
+
     if (GPIO_Pin == USER_Btn_Pin) {
-#if AMG8833_BRINGUP_TEST
         if ((now - g_last_b1_ms) > 180U) {
             g_last_b1_ms = now;
             g_next_object_request = 1U;
         }
-#endif
         return;
     }
 
@@ -391,7 +357,3 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         }
     }
 }
-
-
-
-
